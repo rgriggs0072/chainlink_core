@@ -1,0 +1,97 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>2f3971e9-8d03-40ee-82ac-b455eb8137c4</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>chainlink_core.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>chainlink_core</Name>
+    <RootNamespace>chainlink_core</RootNamespace>
+    <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
+    <SuppressConfigureTestFrameworkPrompt>true</SuppressConfigureTestFrameworkPrompt>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="app_pages\admin.py" />
+    <Compile Include="app_pages\admin_reset_logs.py" />
+    <Compile Include="app_pages\ai_narrative_report.py" />
+    <Compile Include="app_pages\data_exports.py" />
+    <Compile Include="app_pages\distro_grid.py" />
+    <Compile Include="app_pages\distro_grid_sections.py" />
+    <Compile Include="app_pages\gap_report.py" />
+    <Compile Include="app_pages\home.py" />
+    <Compile Include="app_pages\import_distributor_report.py" />
+    <Compile Include="app_pages\load_company_data.py" />
+    <Compile Include="app_pages\load_company_sections.py" />
+    <Compile Include="app_pages\reports.py" />
+    <Compile Include="app_pages\reset_schedule.py" />
+    <Compile Include="app_pages\reset_schedule_sections.py" />
+    <Compile Include="app_pages\upload_product_catalog.py" />
+    <Compile Include="app_pages\__init__.py" />
+    <Compile Include="auth\forgot_password.py" />
+    <Compile Include="auth\login.py" />
+    <Compile Include="auth\reset_password.py" />
+    <Compile Include="chainlink_core.py" />
+    <Compile Include="key_checker.py" />
+    <Compile Include="nav\menu_styles.py" />
+    <Compile Include="nav\navigation_bar.py" />
+    <Compile Include="provision_keys.py" />
+    <Compile Include="sf_connector\service_connector.py" />
+    <Compile Include="tenants\tenant_manager.py" />
+    <Compile Include="test_pages\test_distro_grid.py" />
+    <Compile Include="utils\admin_utils.py" />
+    <Compile Include="utils\auth_utils.py" />
+    <Compile Include="utils\dashboard_data\home_dashboard.py" />
+    <Compile Include="utils\distro_grid_helpers.py" />
+    <Compile Include="utils\email_utils.py" />
+    <Compile Include="utils\home_ui_helpers.py" />
+    <Compile Include="utils\load_company_data_helpers.py" />
+    <Compile Include="utils\logout_utils.py" />
+    <Compile Include="utils\reports_utils.py" />
+    <Compile Include="utils\reset_schedule_helpers.py" />
+    <Compile Include="utils\snowflake_utils.py" />
+    <Compile Include="utils\templates\email_templates.py" />
+    <Compile Include="utils\templates\__init__.py" />
+    <Compile Include="utils\ui_helpers.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="auth\" />
+    <Folder Include="images\" />
+    <Folder Include="images\DeltaPacific\" />
+    <Folder Include="app_pages\" />
+    <Folder Include="images\Default_Logo\" />
+    <Folder Include="nav\" />
+    <Folder Include="import_templates\" />
+    <Folder Include="test_pages\" />
+    <Folder Include="utils\" />
+    <Folder Include="tenants\" />
+    <Folder Include="sf_connector\" />
+    <Folder Include="utils\dashboard_data\" />
+    <Folder Include="utils\templates\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="chainlinkanalytics_logo.png" />
+    <Content Include="images\Default_Logo\default_logo.png" />
+    <Content Include="images\DeltaPacific\DeltaPacific_Logo.jpg" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+  <!-- Uncomment the CoreCompile target to enable the Build command in
+       Visual Studio and specify your pre- and post-build commands in
+       the BeforeBuild and AfterBuild targets below. -->
+  <!--<Target Name="CoreCompile" />-->
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+</Project>

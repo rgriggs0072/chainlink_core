@@ -1,0 +1,11 @@
+streamlit==1.33.0
+streamlit-authenticator==0.2.3
+snowflake-connector-python==3.6.0
+cryptography>=41.0.0
+pandas
+bcrypt
+PyJWT
+PyYAML
+extra-streamlit-components
+openai>=1.0.0
+

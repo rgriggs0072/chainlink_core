@@ -1,0 +1,260 @@
+﻿# app_pages/admin.py
+import streamlit as st
+from utils.auth_utils import is_admin_user, unlock_user_account, create_user_account
+from utils.admin_utils import fetch_reset_logs
+from sf_connector.service_connector import get_service_account_connection
+from datetime import datetime
+import time
+
+# --- Style for Metric Cards ---
+st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #f7f7f9;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        text-align: center;
+        font-family: "Segoe UI", sans-serif;
+    }
+    .metric-label {
+        font-size: 0.9rem;
+        color: #666;
+        margin-bottom: 0.25rem;
+    }
+    .metric-value {
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #111;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- Animated Metric Helper ---
+def animated_metric_card(label, final_value, bg_color, duration=1.2):
+    placeholder = st.empty()
+    steps = 50
+    delay = duration / steps
+
+    for i in range(steps + 1):
+        interpolated = int(final_value * (i / steps))
+        placeholder.markdown(f"""
+            <div style="
+                background-color: {bg_color};
+                padding: 20px;
+                border-radius: 15px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                text-align: center;
+                font-family: 'Segoe UI', sans-serif;
+            ">
+                <div style="font-size: 1.0rem; color: #555;">{label}</div>
+                <div style="font-size: 2.2rem; font-weight: bold; color: #111; margin-top: 5px;">
+                    {interpolated}
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        time.sleep(delay)
+
+# --- Admin Panel ---
+def render():
+    st.title("🔧 Admin Panel")
+
+    # ---------------- Admin Dashboard Metrics ----------------
+    with st.expander("📈 Admin Metrics Overview", expanded=True):
+        st.subheader("User & Security Metrics")
+        st.caption("📅 Metrics reflect activity in the past 7 days")
+
+        try:
+            conn = get_service_account_connection()
+            cur = conn.cursor()
+
+            tenant_id = st.session_state.get("tenant_id")
+
+            # Fetch all Admin Metrics from Admin Views
+            cur.execute("""SELECT TOTAL_USERS, LOCKED_USERS 
+                           FROM TENANTUSERDB.CHAINLINK_SCH.ADMIN_USER_COUNTS
+                           WHERE TENANT_ID = %s""", (tenant_id,))
+            result = cur.fetchone()
+            total_users, locked_users = result if result else (0, 0)
+
+            cur.execute("""SELECT FAILED_LOGINS_LAST_7DAYS
+                           FROM TENANTUSERDB.CHAINLINK_SCH.ADMIN_FAILED_LOGINS_LAST7D
+                           WHERE TENANT_ID = %s""", (tenant_id,))
+            result = cur.fetchone()
+            failed_logins = result[0] if result else 0
+
+            cur.execute("""SELECT PASSWORD_RESETS_LAST_7DAYS
+                           FROM TENANTUSERDB.CHAINLINK_SCH.ADMIN_PASSWORD_RESETS_LAST7D
+                           WHERE TENANT_ID = %s""", (tenant_id,))
+            result = cur.fetchone()
+            resets_last_7_days = result[0] if result else 0
+
+            cur.execute("""SELECT UNLOCKS_LAST_7DAYS
+                           FROM TENANTUSERDB.CHAINLINK_SCH.ADMIN_UNLOCKS_LAST7D
+                           WHERE TENANT_ID = %s""", (tenant_id,))
+            result = cur.fetchone()
+            unlocks_last_7_days = result[0] if result else 0
+
+            cur.close()
+            conn.close()
+
+            # Metrics with background color
+            metrics = [
+                ("👥 Total Users", total_users, "#e3f2fd"),
+                ("🔒 Locked Accounts", locked_users, "#fdecea"),
+                ("📉 Failed Logins", failed_logins, "#fff3e0"),
+                ("📬 Resets", resets_last_7_days, "#ede7f6"),
+                ("🔓 Unlocks", unlocks_last_7_days, "#e8f5e9"),
+            ]
+
+            cols = st.columns(len(metrics))
+
+            for col, (label, value, bg_color) in zip(cols, metrics):
+                with col:
+                    animated_metric_card(label, value, bg_color)
+
+            st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        except Exception as e:
+            st.error("⚠️ Failed to load metrics.")
+            st.exception(e)
+
+    # --- Permission Check ---
+    user_email = st.session_state.get("user_email")
+    tenant_id = st.session_state.get("tenant_id")
+
+    if user_email and not tenant_id:
+        conn = get_service_account_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT TENANT_ID FROM USERDATA WHERE EMAIL = %s", (user_email,))
+        result = cur.fetchone()
+        if result:
+            tenant_id = result[0]
+            st.session_state["tenant_id"] = tenant_id
+        else:
+            st.error("❌ Unable to determine your tenant ID.")
+            st.stop()
+
+    if not is_admin_user(user_email, tenant_id):
+        st.error("🚫 You do not have permission to access this page.")
+        return
+
+    # --- Add New User Section ---
+    with st.expander("➕ Add New User", expanded=False):
+        st.subheader("Add a New User")
+
+        new_email = st.text_input("Email")
+        new_first_name = st.text_input("First Name")
+        new_last_name = st.text_input("Last Name")
+
+        role_map = {"Admin": 1001, "User": 1005}
+        new_role_label = st.selectbox("Role", options=list(role_map.keys()))
+        add_user_btn = st.button("Create User")
+
+        if add_user_btn:
+            role_id = role_map.get(new_role_label)
+            if not all([new_email, new_first_name, new_last_name, role_id, tenant_id]):
+                st.warning("⚠️ Please complete all fields.")
+            else:
+                success, message = create_user_account(
+                    conn=get_service_account_connection(),
+                    email=new_email,
+                    first_name=new_first_name,
+                    last_name=new_last_name,
+                    role_name=new_role_label,
+                    tenant_id=tenant_id
+                )
+                if success:
+                    st.success(message)
+                else:
+                    st.error("❌ Failed to create user:")
+                    st.error(message)
+
+    # --- Unlock Locked Users Section ---
+    with st.expander("🔓 Unlock Locked Users", expanded=False):
+        st.subheader("Select Locked Users to Unlock")
+
+        try:
+            conn = get_service_account_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT EMAIL, FIRST_NAME, LAST_NAME, FAILED_ATTEMPTS
+                FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
+                WHERE IS_LOCKED = TRUE AND TENANT_ID = %s
+            """, (tenant_id,))
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            if rows:
+                email_options = [
+                    f"{r[0]} — {r[1]} {r[2]} (Attempts: {r[3]})" for r in rows
+                ]
+                email_lookup = {opt: r[0] for opt, r in zip(email_options, rows)}
+
+                selected_users = st.multiselect("Locked Accounts", options=email_options)
+
+                if st.button("🔓 Unlock Selected Users"):
+                    if not selected_users:
+                        st.warning("⚠️ Please select at least one user.")
+                    else:
+                        unlocked = []
+                        for label in selected_users:
+                            email = email_lookup[label]
+                            success, msg = unlock_user_account(
+                                email=email,
+                                unlocked_by=st.session_state.get("user_email"),
+                                tenant_id=tenant_id,
+                                reason="Unlocked via admin panel"
+                            )
+                            if success:
+                                unlocked.append(email)
+                        if unlocked:
+                            st.success(f"✅ Unlocked: {', '.join(unlocked)}")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to unlock selected users.")
+            else:
+                st.info("✅ No locked accounts currently.")
+
+        except Exception as e:
+            st.error("Failed to load locked user data.")
+            st.exception(e)
+
+    # --- Failed Login Viewer Audit Logs Section ---
+    with st.expander("📊 Failed Login Viewer", expanded=False):
+        st.subheader("Recent Failed Login Attempts")
+        try:
+            conn = get_service_account_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT EMAIL, TIMESTAMP, IP_ADDRESS 
+                FROM TENANTUSERDB.CHAINLINK_SCH.FAILED_LOGINS 
+                ORDER BY TIMESTAMP DESC LIMIT 50
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            if rows:
+                st.dataframe(
+                    [{"Email": r[0], "Timestamp": r[1], "IP Address": r[2]} for r in rows],
+                    use_container_width=True
+                )
+            else:
+                st.info("No failed login attempts recorded.")
+        except Exception as e:
+            st.error("Failed to retrieve failed login data.")
+            st.exception(e)
+
+    # --- View Password Reset Logs Section ---
+    with st.expander("🔍 View Password Reset Logs", expanded=False):
+        st.subheader("Reset Log Viewer")
+        conn = get_service_account_connection()
+        if conn:
+            logs = fetch_reset_logs(conn, tenant_id)
+            if logs.empty:
+                st.info("No reset logs found for this tenant.")
+            else:
+                st.dataframe(logs, use_container_width=True)
+        else:
+            st.error("Failed to connect to the database.")
