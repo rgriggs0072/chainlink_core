@@ -4,6 +4,7 @@ streamlit-option-menu
 snowflake-connector-python==3.6.0
 cryptography>=41.0.0
 pandas
+openpyxl
 bcrypt
 PyJWT
 PyYAML
