@@ -37,8 +37,9 @@ def get_service_account_connection():
             warehouse=secrets["sf_warehouse"],
             database=secrets["sf_database"],
             schema=secrets["sf_schema"],
-            disable_ocsp_checks=True  # ✅ Add this!
+            disable_ocsp_checks=True
         )
+
 
         return conn  # 👈 Single value, not a tuple!
 
