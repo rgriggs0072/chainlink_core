@@ -38,6 +38,7 @@ def get_service_account_connection():
             warehouse=secrets["sf_warehouse"],
             database=secrets["sf_database"],
             schema=secrets["sf_schema"]
+            disable_ocsp_checks=True  # ✅ Add this!
         )
 
         return conn  # 👈 Single value, not a tuple!
@@ -64,6 +65,7 @@ def connect_to_tenant_snowflake(tenant_config):
         database=tenant_config["database"],
         schema=tenant_config["schema"],
         role=tenant_config["role"]  # ✅ required to avoid PUBLIC default
+        disable_ocsp_checks=True  # ✅ Add this!
     )
 
     # ✅ Optional debug check
