@@ -72,7 +72,7 @@ def render_customers_section():
 # ------------------- PRODUCTS -------------------
 def render_products_section():
     st.subheader("📄 Format Products")
-    products_file = st.file_uploader("Upload Products Excel", type=["xlsx"], key="products_upload")
+    products_file = st.file_uploader("Upload Products Excel", type=["xlsx", "csv"], key="products_upload")
 
     if products_file:
         try:
@@ -86,7 +86,7 @@ def render_products_section():
 
     st.markdown("---")
     st.subheader("📤 Upload Formatted Products to Snowflake")
-    products_final = st.file_uploader("Upload formatted Products", type=["xlsx"], key="products_final_upload")
+    products_final = st.file_uploader("Upload formatted Products", type=["xlsx", "csv"], key="products_final_upload")
 
     if products_final:
         try:

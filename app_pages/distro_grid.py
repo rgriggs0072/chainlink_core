@@ -17,3 +17,5 @@ def render():
     # Section 2: Upload the file
     render_distro_grid_uploader_section()
 
+    st.markdown("---")
+

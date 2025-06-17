@@ -26,6 +26,7 @@
     <Compile Include="app_pages\admin.py" />
     <Compile Include="app_pages\admin_reset_logs.py" />
     <Compile Include="app_pages\ai_narrative_report.py" />
+    <Compile Include="app_pages\ai_placement_intelligence.py" />
     <Compile Include="app_pages\data_exports.py" />
     <Compile Include="app_pages\distro_grid.py" />
     <Compile Include="app_pages\distro_grid_sections.py" />
@@ -51,6 +52,7 @@
     <Compile Include="tenants\tenant_manager.py" />
     <Compile Include="test_pages\test_distro_grid.py" />
     <Compile Include="utils\admin_utils.py" />
+    <Compile Include="utils\ai_placement_helpers.py" />
     <Compile Include="utils\auth_utils.py" />
     <Compile Include="utils\dashboard_data\home_dashboard.py" />
     <Compile Include="utils\distro_grid_helpers.py" />

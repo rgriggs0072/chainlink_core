@@ -25,4 +25,7 @@ __pycache__/
 *.sqlite3
 .env
 chainlink_venv/
+*.pem
+*.pub
+
 

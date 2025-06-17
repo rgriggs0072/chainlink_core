@@ -2,6 +2,7 @@
 # test_pages/test_distro_grid.py
 import streamlit as st
 import pandas as pd
+import openpyxl
 from datetime import datetime
 from utils.distro_grid_helpers import (
     format_non_pivot_table,
@@ -38,7 +39,7 @@ format_type = st.radio("Choose Test Format", ["Standard", "Pivot"], horizontal=T
 test_file = st.file_uploader("Upload Test Spreadsheet", type=["xlsx"], key="test_distro_upload")
 
 if test_file and selected_chain:
-    import openpyxl
+    
     workbook = openpyxl.load_workbook(test_file)
 
     with st.spinner("📄 Formatting test spreadsheet..."):

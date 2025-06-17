@@ -124,6 +124,8 @@ def main():
         if not isinstance(tenant_config, dict):
             st.error("❌ Tenant configuration failed to load or is not a dict.")
             return
+        # ✅ Save tenant_id to session so other modules (e.g., upload) can use it
+        st.session_state["tenant_id"] = user_entry["tenant_id"]
 
         required_keys = ["snowflake_user", "account", "private_key", "warehouse", "database", "schema"]
         missing_keys = [k for k in required_keys if k not in tenant_config or not tenant_config[k]]
@@ -162,6 +164,9 @@ def main():
             elif report_page == "AI-Narrative Report":
                 import app_pages.ai_narrative_report as page
                 page.render()
+            elif report_page == "Placement Intelligence":
+                import app_pages.ai_placement_intelligence as page  # ✅ ADD THIS LINE
+                page.render()
             else:
                 st.warning("Invalid report selection.")
 
@@ -174,6 +179,7 @@ def main():
                 import app_pages.reset_schedule as page
             elif selected_sub == "Distribution Grid Processing":
                 import app_pages.distro_grid as page
+            
             page.render()
 
         elif selected_main == "Admin":
@@ -197,6 +203,7 @@ def main():
             if st.button("Reset Password Link"):
                 st.session_state["forgot_password_submitted"] = True
                 st.rerun()
+
 
 if __name__ == "__main__":
     main()

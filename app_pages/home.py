@@ -68,7 +68,7 @@ def display_dashboard():
                f"""
                 <div style='
                     background-color: #F8F2EB;
-                    secondaydayBackgroundColor: #ff0000;
+                    secondaryBackgroundColor: #ff0000;
                     padding: 30px;
                     border-radius: 10px;
                     #box-shadow: 0 0.10rem 1.75rem 0 rgba(58, 59, 69, 0.15);

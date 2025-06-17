@@ -11,7 +11,7 @@ import openai
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
 def get_summary_data(conn, store_name):
-    # Replace with actual summary queries
+    # summary queries
     sales_query = f"""
         SELECT PRODUCT_NAME, COUNT(*) AS TOTAL_ATTEMPTS,
         SUM(PURCHASED_YES_NO) AS PURCHASED,
@@ -76,8 +76,20 @@ def render():
         st.error("Missing tenant configuration. Please log in again.")
         return
 
-    store_name = st.text_input("Enter Store Name")
-    if not store_name:
+   # Fetch distinct store names for dropdown
+    try:
+        conn = connect_to_tenant_snowflake(toml_info)
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT STORE_NAME FROM CUSTOMERS ORDER BY STORE_NAME")
+            store_options = [row[0] for row in cur.fetchall()]
+    except Exception as e:
+        st.error(f"Error loading store names: {e}")
+        return
+
+    # Dropdown with default empty state
+    store_name = st.selectbox("Select Store Name", ["-- Select Store --"] + store_options)
+
+    if store_name == "-- Select Store --":
         return
 
     if st.button("Generate AI-Narrative Report"):

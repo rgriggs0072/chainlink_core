@@ -16,6 +16,7 @@ def load_tenant_config(tenant_id):
     """, (tenant_id,))
     row = cur.fetchone()
 
+
     if not row:
         st.error(f"No TOML config found for tenant_id {tenant_id}")
         return None

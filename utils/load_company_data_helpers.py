@@ -346,10 +346,12 @@ def write_customers_to_snowflake(df: pd.DataFrame):
 
 def write_products_to_snowflake(df: pd.DataFrame):
     """
-    Uploads products data to Snowflake, using TRUNCATE + INSERT + audit fields.
+    Uploads cleaned products data to Snowflake with proper type handling and auditing.
     """
+    # Clean the DataFrame
     df.replace("NAN", np.nan, inplace=True)
-    df.fillna("NULL", inplace=True)
+    df.replace({np.nan: None}, inplace=True)  # ✅ Insert NULLs, not string 'NULL'
+    df["CARRIER_UPC"] = df["CARRIER_UPC"].astype(str).str.strip()  # ✅ Preserve UPC formatting
 
     conn, cursor, tenant_id = _get_conn_and_cursor()
     if not conn: return
