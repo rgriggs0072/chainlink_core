@@ -4,8 +4,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pandas.io.sql")
 
 
-import os
-os.environ["SF_OCSP_CHECK"] = "false"
+
 import streamlit as st
 import snowflake.connector as snowflake_connector
 
@@ -37,7 +36,7 @@ def get_service_account_connection():
             private_key=private_key,
             warehouse=secrets["sf_warehouse"],
             database=secrets["sf_database"],
-            schema=secrets["sf_schema"]
+            schema=secrets["sf_schema"],
             disable_ocsp_checks=True  # ✅ Add this!
         )
 
@@ -64,7 +63,7 @@ def connect_to_tenant_snowflake(tenant_config):
         warehouse=tenant_config["warehouse"],
         database=tenant_config["database"],
         schema=tenant_config["schema"],
-        role=tenant_config["role"]  # ✅ required to avoid PUBLIC default
+        role=tenant_config["role"],  # ✅ required to avoid PUBLIC default
         disable_ocsp_checks=True  # ✅ Add this!
     )
 

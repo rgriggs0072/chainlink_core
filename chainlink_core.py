@@ -1,9 +1,5 @@
 ﻿# ------------------ chainlink_core.py -------------------
 
-import os
-os.environ["SF_OCSP_CHECK"] = "false"
-
-
 import streamlit as st
 from PIL import Image
 import streamlit_authenticator as stauth
