@@ -1,4 +1,8 @@
-﻿# chainlink_core.py
+﻿# ------------------ chainlink_core.py -------------------
+
+import os
+os.environ["SF_OCSP_CHECK"] = "false"
+
 
 import streamlit as st
 from PIL import Image
