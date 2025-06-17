@@ -3,8 +3,20 @@
   "WorkspaceRootPath": "E:\\Development\\chainlink_core\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\distro_grid_sections.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\sf_connector\\service_connector.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:sf_connector\\service_connector.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\app_pages\\data_exports.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\data_exports.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\utils\\snowflake_utils.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:utils\\snowflake_utils.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\utils\\reports_utils.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:utils\\reports_utils.py||{8B382828-6202-11D1-8870-0000F87579D2}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\utils\\distro_grid_helpers.py||{8B382828-6202-11D1-8870-0000F87579D2}",
@@ -15,24 +27,8 @@
       "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\distro_grid.py||{8B382828-6202-11D1-8870-0000F87579D2}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\app_pages\\ai_placement_intelligence.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\ai_placement_intelligence.py||{8B382828-6202-11D1-8870-0000F87579D2}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\utils\\ai_placement_helpers.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:utils\\ai_placement_helpers.py||{8B382828-6202-11D1-8870-0000F87579D2}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\chainlink_core.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:chainlink_core.py||{8B382828-6202-11D1-8870-0000F87579D2}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\nav\\navigation_bar.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:nav\\navigation_bar.py||{8B382828-6202-11D1-8870-0000F87579D2}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\app_pages\\ai_narrative_report.py||{8B382828-6202-11D1-8870-0000F87579D2}",
-      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\ai_narrative_report.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+      "AbsoluteMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{2F3971E9-8D03-40EE-82AC-B455EB8137C4}|chainlink_core.pyproj|solutionrelative:app_pages\\distro_grid_sections.py||{8B382828-6202-11D1-8870-0000F87579D2}"
     }
   ],
   "DocumentGroupContainers": [
@@ -42,7 +38,7 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 7,
+          "SelectedChildIndex": 6,
           "Children": [
             {
               "$type": "Bookmark",
@@ -70,100 +66,88 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
-              "Title": "distro_grid_helpers.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\utils\\distro_grid_helpers.py",
-              "RelativeDocumentMoniker": "utils\\distro_grid_helpers.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\utils\\distro_grid_helpers.py",
-              "RelativeToolTip": "utils\\distro_grid_helpers.py",
-              "ViewState": "AgIAAOQAAAAAAAAAAAAAAH8CAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-12T19:50:47.078Z"
-            },
-            {
-              "$type": "Document",
               "DocumentIndex": 0,
-              "Title": "distro_grid_sections.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py",
-              "RelativeDocumentMoniker": "app_pages\\distro_grid_sections.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py",
-              "RelativeToolTip": "app_pages\\distro_grid_sections.py",
-              "ViewState": "AgIAACoAAAAAAAAAAAAAAD8AAABIAAAAAAAAAA==",
+              "Title": "service_connector.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\sf_connector\\service_connector.py",
+              "RelativeDocumentMoniker": "sf_connector\\service_connector.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\sf_connector\\service_connector.py",
+              "RelativeToolTip": "sf_connector\\service_connector.py",
+              "ViewState": "AgIAADIAAAAAAAAAAAAAAEoAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-12T19:50:36.675Z",
+              "WhenOpened": "2025-06-17T06:15:15.103Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
               "DocumentIndex": 2,
+              "Title": "snowflake_utils.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\utils\\snowflake_utils.py",
+              "RelativeDocumentMoniker": "utils\\snowflake_utils.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\utils\\snowflake_utils.py",
+              "RelativeToolTip": "utils\\snowflake_utils.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2025-06-17T06:03:06.679Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "data_exports.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\data_exports.py",
+              "RelativeDocumentMoniker": "app_pages\\data_exports.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\data_exports.py",
+              "RelativeToolTip": "app_pages\\data_exports.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAAAWAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2025-06-17T06:01:52.484Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "reports_utils.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\utils\\reports_utils.py",
+              "RelativeDocumentMoniker": "utils\\reports_utils.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\utils\\reports_utils.py",
+              "RelativeToolTip": "utils\\reports_utils.py",
+              "ViewState": "AgIAAAkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2025-06-17T06:01:11.942Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
               "Title": "distro_grid.py",
               "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\distro_grid.py",
               "RelativeDocumentMoniker": "app_pages\\distro_grid.py",
               "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\distro_grid.py",
               "RelativeToolTip": "app_pages\\distro_grid.py",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-12T19:50:30.784Z"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 4,
-              "Title": "ai_placement_helpers.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\utils\\ai_placement_helpers.py",
-              "RelativeDocumentMoniker": "utils\\ai_placement_helpers.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\utils\\ai_placement_helpers.py",
-              "RelativeToolTip": "utils\\ai_placement_helpers.py",
-              "ViewState": "AgIAAGcAAAAAAAAAAAAAAIcAAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-11T20:02:46.678Z"
+              "WhenOpened": "2025-05-07T16:17:15.112Z"
             },
             {
               "$type": "Document",
               "DocumentIndex": 6,
-              "Title": "navigation_bar.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\nav\\navigation_bar.py",
-              "RelativeDocumentMoniker": "nav\\navigation_bar.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\nav\\navigation_bar.py",
-              "RelativeToolTip": "nav\\navigation_bar.py",
-              "ViewState": "AgIAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Title": "distro_grid_sections.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py",
+              "RelativeDocumentMoniker": "app_pages\\distro_grid_sections.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\distro_grid_sections.py",
+              "RelativeToolTip": "app_pages\\distro_grid_sections.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAsAAAAjAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-11T19:56:28.449Z"
+              "WhenOpened": "2025-05-07T16:15:22.923Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 7,
-              "Title": "ai_narrative_report.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\ai_narrative_report.py",
-              "RelativeDocumentMoniker": "app_pages\\ai_narrative_report.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\ai_narrative_report.py",
-              "RelativeToolTip": "app_pages\\ai_narrative_report.py",
-              "ViewState": "AgIAADMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "DocumentIndex": 4,
+              "Title": "distro_grid_helpers.py",
+              "DocumentMoniker": "E:\\Development\\chainlink_core\\utils\\distro_grid_helpers.py",
+              "RelativeDocumentMoniker": "utils\\distro_grid_helpers.py",
+              "ToolTip": "E:\\Development\\chainlink_core\\utils\\distro_grid_helpers.py",
+              "RelativeToolTip": "utils\\distro_grid_helpers.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-11T19:54:24.436Z"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 3,
-              "Title": "ai_placement_intelligence.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\app_pages\\ai_placement_intelligence.py",
-              "RelativeDocumentMoniker": "app_pages\\ai_placement_intelligence.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\app_pages\\ai_placement_intelligence.py",
-              "RelativeToolTip": "app_pages\\ai_placement_intelligence.py",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAcAAAAZAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-06-11T19:50:50.179Z"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 5,
-              "Title": "chainlink_core.py",
-              "DocumentMoniker": "E:\\Development\\chainlink_core\\chainlink_core.py",
-              "RelativeDocumentMoniker": "chainlink_core.py",
-              "ToolTip": "E:\\Development\\chainlink_core\\chainlink_core.py",
-              "RelativeToolTip": "chainlink_core.py",
-              "ViewState": "AgIAAJMAAAAAAAAAAAAAAKgAAAAdAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
-              "WhenOpened": "2025-04-30T01:36:41.789Z"
+              "WhenOpened": "2025-05-07T16:12:36.983Z"
             }
           ]
         },

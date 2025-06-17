@@ -1,4 +1,11 @@
 ﻿#--------------- service_connector.py ---------------#
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pandas.io.sql")
+
+
+import os
+os.environ["SF_OCSP_CHECK"] = "false"
 import streamlit as st
 import snowflake.connector as snowflake_connector
 
