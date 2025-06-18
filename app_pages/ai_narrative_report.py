@@ -4,16 +4,13 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from utils.pdf_utils import generate_ai_report_pdf
-
 from sf_connector.service_connector import connect_to_tenant_snowflake
-
 import openai
 
 # Load OpenAI key
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
 def get_summary_data(conn, store_name):
-    # summary queries
     sales_query = f"""
         SELECT PRODUCT_NAME, COUNT(*) AS TOTAL_ATTEMPTS,
         SUM(PURCHASED_YES_NO) AS PURCHASED,
@@ -38,7 +35,7 @@ def get_summary_data(conn, store_name):
 
 def generate_narrative(sales_df, gaps_df):
     client = openai.OpenAI(api_key=OPENAI_API_KEY)
-    
+
     sales_summary = sales_df.to_string(index=False)
     gaps_summary = gaps_df.to_string(index=False)
 
@@ -67,10 +64,10 @@ def generate_narrative(sales_df, gaps_df):
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"❌ AI Generation Failed: {e}"
+        return f"\u274c AI Generation Failed: {e}"
 
 def render():
-    st.title("🧾 AI Narrative Report")
+    st.title("\U0001F8BE AI Narrative Report")
     st.markdown("Generate a narrative summary of key sales and gap trends using AI.")
 
     toml_info = st.session_state.get("toml_info")
@@ -78,7 +75,6 @@ def render():
         st.error("Missing tenant configuration. Please log in again.")
         return
 
-   # Fetch distinct store names for dropdown
     try:
         conn = connect_to_tenant_snowflake(toml_info)
         with conn.cursor() as cur:
@@ -88,13 +84,11 @@ def render():
         st.error(f"Error loading store names: {e}")
         return
 
-    # Dropdown with default empty state
-    store_name = st.selectbox("Select Store Name", ["-- Select Store --"] + store_options)
+    with st.form("ai_narrative_form"):
+        store_name = st.selectbox("Select Store Name", ["-- Select Store --"] + store_options)
+        submitted = st.form_submit_button("Generate AI-Narrative Report")
 
-    if store_name == "-- Select Store --":
-        return
-
-    if st.button("Generate AI-Narrative Report"):
+    if submitted and store_name != "-- Select Store --":
         with st.spinner("Analyzing data and generating AI report..."):
             conn = connect_to_tenant_snowflake(toml_info)
             if not conn:
@@ -110,19 +104,17 @@ def render():
             client_name = toml_info.get("client_name", "Chainlink Client")
             pdf_buffer = generate_ai_report_pdf(client_name, store_name, report_text)
 
-            # ✅ Store in session state
             st.session_state["report_text"] = report_text
             st.session_state["pdf_buffer"] = pdf_buffer
             st.session_state["store_name"] = store_name
-# ✅ If report exists in session state, show it
-if "report_text" in st.session_state:
-    st.subheader("🧠 AI-Generated Narrative")
-    st.write(st.session_state["report_text"])
 
-    st.download_button(
-        label="📄 Download Narrative Report (PDF)",
-        data=st.session_state["pdf_buffer"],
-        file_name=f"{st.session_state['store_name']}_narrative_report.pdf",
-        mime="application/pdf"
-    )
+    if "report_text" in st.session_state:
+        st.subheader("\U0001F4E0 AI-Generated Narrative")
+        st.write(st.session_state["report_text"])
 
+        st.download_button(
+            label="\U0001F4C4 Download Narrative Report (PDF)",
+            data=st.session_state["pdf_buffer"],
+            file_name=f"{st.session_state['store_name']}_narrative_report.pdf",
+            mime="application/pdf"
+        )
