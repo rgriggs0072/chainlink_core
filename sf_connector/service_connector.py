@@ -1,15 +1,12 @@
-﻿#--------------- service_connector.py ---------------#
-
-import warnings
+﻿import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pandas.io.sql")
-
-
 
 import streamlit as st
 import snowflake.connector as snowflake_connector
-
-
+from packaging import version  # ✅ to handle version parsing
 from cryptography.hazmat.primitives import serialization
+
+# ============================ Helper: Load PEM Key ============================
 
 def load_private_key(pem_input):
     if isinstance(pem_input, str):
@@ -18,6 +15,20 @@ def load_private_key(pem_input):
         pem_input,
         password=None
     )
+
+# ============================ Helper: Build connection args ============================
+
+def build_connection_args(base_args: dict):
+    connector_version = snowflake_connector.__version__
+
+    if version.parse(connector_version) >= version.parse("3.14.0"):
+        base_args["disable_ocsp_checks"] = True
+    else:
+        base_args["insecure_mode"] = True
+
+    return base_args
+
+# ============================ Service Account Connector ============================
 
 def get_service_account_connection():
     try:
@@ -30,24 +41,23 @@ def get_service_account_connection():
             encryption_algorithm=serialization.NoEncryption()
         )
 
-        conn = snowflake_connector.connect(
+        base_args = dict(
             user=secrets["sf_user"],
             account=secrets["sf_account"],
             private_key=private_key,
             warehouse=secrets["sf_warehouse"],
             database=secrets["sf_database"],
-            schema=secrets["sf_schema"],
-            insecure_mode=True
-
+            schema=secrets["sf_schema"]
         )
 
-
-        return conn  # 👈 Single value, not a tuple!
+        conn = snowflake_connector.connect(**build_connection_args(base_args))
+        return conn
 
     except Exception as e:
         st.error(f"Snowflake connection failed: {str(e)}")
         return None
 
+# ============================ Tenant Connector ============================
 
 def connect_to_tenant_snowflake(tenant_config):
     private_key_obj = load_private_key(tenant_config["private_key"])
@@ -58,22 +68,22 @@ def connect_to_tenant_snowflake(tenant_config):
         encryption_algorithm=serialization.NoEncryption()
     )
 
-    conn = snowflake_connector.connect(
-        user=tenant_config["snowflake_user"],  # or "user" if renamed later
+    base_args = dict(
+        user=tenant_config["snowflake_user"],
         account=tenant_config["account"],
         private_key=private_key,
         warehouse=tenant_config["warehouse"],
         database=tenant_config["database"],
         schema=tenant_config["schema"],
-        role=tenant_config["role"],  # ✅ required to avoid PUBLIC default
-        insecure_mode=True
-
+        role=tenant_config["role"]
     )
 
-    # ✅ Optional debug check
+    conn = snowflake_connector.connect(**build_connection_args(base_args))
+
+    # Optional context verification
     cursor = conn.cursor()
     cursor.execute("SELECT CURRENT_ROLE(), CURRENT_USER(), CURRENT_DATABASE(), CURRENT_SCHEMA()")
-   # st.write("🔍 Snowflake Context:", cursor.fetchone())
+    # st.write("🔍 Snowflake Context:", cursor.fetchone())
     cursor.close()
 
     return conn
