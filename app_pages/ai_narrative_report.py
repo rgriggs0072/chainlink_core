@@ -95,7 +95,6 @@ def render():
         return
 
     if st.button("Generate AI-Narrative Report"):
-        st.session_state["ai_report_ready"] = False  # Reset before generating
         with st.spinner("Analyzing data and generating AI report..."):
             conn = connect_to_tenant_snowflake(toml_info)
             if not conn:
@@ -111,14 +110,12 @@ def render():
             client_name = toml_info.get("client_name", "Chainlink Client")
             pdf_buffer = generate_ai_report_pdf(client_name, store_name, report_text)
 
+            # ✅ Store in session state
             st.session_state["report_text"] = report_text
             st.session_state["pdf_buffer"] = pdf_buffer
             st.session_state["store_name"] = store_name
-            st.session_state["ai_report_ready"] = True  # Set flag to show result
-
-
 # ✅ If report exists in session state, show it
-if st.session_state.get("ai_report_ready"):
+if "report_text" in st.session_state:
     st.subheader("🧠 AI-Generated Narrative")
     st.write(st.session_state["report_text"])
 
