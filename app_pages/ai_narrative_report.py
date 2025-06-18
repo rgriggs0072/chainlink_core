@@ -3,6 +3,8 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from utils.pdf_utils import generate_ai_report_pdf
+
 from sf_connector.service_connector import connect_to_tenant_snowflake
 
 import openai
@@ -111,13 +113,17 @@ def render():
             st.write(report_text)
 
             # Optionally offer as download
-            download_buf = BytesIO()
-            download_buf.write(report_text.encode())
-            download_buf.seek(0)
+           # Get client name from TOML or fallback
+            client_name = toml_info.get("client_name", "Chainlink Client")
+
+            # Generate PDF from AI narrative
+            pdf_buffer = generate_ai_report_pdf(client_name, store_name, report_text)
+
             st.download_button(
-                label="📥 Download Narrative Report",
-                data=download_buf,
-                file_name=f"{store_name}_narrative_report.txt",
-                mime="text/plain"
+                label="📄 Download Narrative Report (PDF)",
+                data=pdf_buffer,
+                file_name=f"{store_name}_narrative_report.pdf",
+                mime="application/pdf"
             )
+
 
