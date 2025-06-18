@@ -114,3 +114,15 @@ def render():
             st.session_state["report_text"] = report_text
             st.session_state["pdf_buffer"] = pdf_buffer
             st.session_state["store_name"] = store_name
+# ✅ If report exists in session state, show it
+if "report_text" in st.session_state:
+    st.subheader("🧠 AI-Generated Narrative")
+    st.write(st.session_state["report_text"])
+
+    st.download_button(
+        label="📄 Download Narrative Report (PDF)",
+        data=st.session_state["pdf_buffer"],
+        file_name=f"{st.session_state['store_name']}_narrative_report.pdf",
+        mime="application/pdf"
+    )
+
