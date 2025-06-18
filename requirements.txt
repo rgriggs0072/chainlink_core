@@ -10,4 +10,4 @@ PyJWT
 PyYAML
 extra-streamlit-components
 openai>=1.0.0
-
+reportlab 
