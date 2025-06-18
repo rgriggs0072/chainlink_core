@@ -94,10 +94,9 @@ def render():
     if store_name == "-- Select Store --":
         return
 
-    if st.button("Generate AI-Narrative Report"):
-        with st.spinner("Analyzing data and generating ai-report..."):
+       if st.button("Generate AI-Narrative Report"):
+        with st.spinner("Analyzing data and generating AI report..."):
             conn = connect_to_tenant_snowflake(toml_info)
-
 
             if not conn:
                 st.error("Snowflake connection failed.")
@@ -112,18 +111,14 @@ def render():
             st.subheader("🧠 AI-Generated Narrative")
             st.write(report_text)
 
-            # Optionally offer as download
-           # Get client name from TOML or fallback
+            # 🧾 Generate polished PDF
             client_name = toml_info.get("client_name", "Chainlink Client")
-
-            # Generate PDF from AI narrative
             pdf_buffer = generate_ai_report_pdf(client_name, store_name, report_text)
 
+            # 📥 PDF download
             st.download_button(
                 label="📄 Download Narrative Report (PDF)",
                 data=pdf_buffer,
                 file_name=f"{store_name}_narrative_report.pdf",
                 mime="application/pdf"
             )
-
-
