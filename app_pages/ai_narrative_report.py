@@ -94,7 +94,7 @@ def render():
     if store_name == "-- Select Store --":
         return
 
-       if st.button("Generate AI-Narrative Report"):
+    if st.button("Generate AI-Narrative Report"):
         with st.spinner("Analyzing data and generating AI report..."):
             conn = connect_to_tenant_snowflake(toml_info)
 
