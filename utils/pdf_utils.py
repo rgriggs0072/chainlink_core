@@ -4,6 +4,8 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from io import BytesIO
 import datetime
+import textwrap
+
 
 
 def generate_ai_report_pdf(client_name, store_name, ai_text):
