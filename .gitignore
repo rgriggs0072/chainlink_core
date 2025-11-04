@@ -29,3 +29,37 @@ chainlink_venv/
 *.pub
 
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+chainlink_venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Keys
+*.pem
+*.pub
+*.key
+*.p8
+*.crt
+
+# IDE / OS
+.vscode/
+.idea/
+.vs/
+*.vsidx
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# Local assets
+images/
+backups/
+.backups/
+
+
+
