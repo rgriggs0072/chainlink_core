@@ -19,7 +19,7 @@ __pycache__/
 
 # Streamlit secrets and cache
 .streamlit/secrets.toml
-.streamlit/config.toml
+
 
 # Misc
 *.sqlite3
