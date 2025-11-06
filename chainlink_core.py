@@ -39,7 +39,7 @@ st.markdown("""
             padding-right: 5rem;
         }
         h1 { font-size: 1.75rem !important; }
-        header[data-testid="stHeader"] { visibility: hidden; }
+       
         #MainMenu, footer {visibility: hidden;}
     </style>
 """, unsafe_allow_html=True)
@@ -68,18 +68,25 @@ def clear_auth_cookie():
 
 
 # --- Sidebar Header + Logout Only ---
-def render_sidebar_header(username, tenant_config, authenticator):
+def render_sidebar_header(username: str, tenant_config: dict, authenticator):
+    
+    """Branding + logout + footer. Shows env/tenant indicator for ops sanity."""
     with st.sidebar:
-        logo_path = tenant_config.get("logo_path", "")
+        print("Lets go i am in the sidebar code now big daddy?")
+        logo_path = (tenant_config or {}).get("logo_path", "")
         image = add_logo(logo_path, width=160)
         if image:
-            st.image(image, use_container_width=False)
+            st.image(image, width="content")
         else:
             st.warning("⚠️ Logo not available")
 
-        st.success(f"Welcome, {username}!")
+        # Small env/tenant badge
+        #env = st.session_state.get("env") or _current_env()
+        tenant_id = st.session_state.get("tenant_id") or "—"
+        #st.caption(f"**Environment:** `{env}` · **Tenant:** `{tenant_id}`")
 
-        handle_logout(authenticator)  # 👈 Clean, centralized call
+        st.success(f"Welcome, {username}!")
+        handle_logout(authenticator)
 
         st.markdown("---")
         st.markdown(
@@ -121,6 +128,11 @@ def main():
         st.session_state["tenant_id"] = user_entry["tenant_id"]
 
         tenant_config = load_tenant_config(user_entry["tenant_id"])
+        # after validating tenant_config
+        st.session_state["tenant_config"] = tenant_config          # <-- new, canonical
+        st.session_state["toml_info"] = tenant_config              # <-- temporary alias (back-compat)
+
+        st.session_state["conn"] = connect_to_tenant_snowflake(tenant_config)
         if not isinstance(tenant_config, dict):
             st.error("❌ Tenant configuration failed to load or is not a dict.")
             return
@@ -140,8 +152,11 @@ def main():
         reset_failed_attempts(username_lc)
 
        
+     
+        
         render_sidebar_header(username, tenant_config, authenticator)
         
+
 
 
         selected_main = render_navigation()

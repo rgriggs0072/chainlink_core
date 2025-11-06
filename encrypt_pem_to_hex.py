@@ -1,0 +1,50 @@
+import binascii
+from cryptography.fernet import Fernet
+
+FERNET = b"Le2iXDuyX2ZiXdoeESwspAgqIjQMSIupcKwRYvqODAE="  # current key
+PEM = b"""-----BEGIN PRIVATE KEY-----
+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
+X4ZJFPKMkahAp5OWDG6WE19N
+-----END PRIVATE KEY-----"""
+
+token = Fernet(FERNET).encrypt(PEM)          # bytes (starts with b"gAAAAA")
+hex_out = binascii.hexlify(token).decode()   # store as HEX in DB
+print(hex_out)
+print("len:", len(hex_out))
+

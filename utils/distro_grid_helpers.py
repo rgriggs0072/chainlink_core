@@ -277,17 +277,25 @@ def call_procedure_update_DG(selected_chain: str):
 
 
 
-def log_update_result(conn, user_id, success, message, ip_address=""):
+def log_update_result(conn, user_id, success, message, ip_address="", tenant_config=None):
     """
-    Logs the result of the update_distro_grid procedure into the LOG table.
+    Logs the result of the update_distro_grid procedure into the tenant's LOG table.
     """
+    if not tenant_config:
+        raise ValueError("tenant_config is required to determine database and schema.")
+
+    db = tenant_config["database"]
+    sch = tenant_config["schema"]
     activity = 'UPDATE_DISTRO_GRID'
+
     query = f"""
-        INSERT INTO DELTAPACIFIC_DB.DELTAPACIFIC_SCH.LOG 
+        INSERT INTO {db}.{sch}.LOG 
         (USERID, ACTIVITYTYPE, DESCRIPTION, SUCCESS, IPADDRESS)
         VALUES (%s, %s, %s, %s, %s)
     """
+
     conn.cursor().execute(query, (user_id, activity, message, success, ip_address))
+
 
 
 

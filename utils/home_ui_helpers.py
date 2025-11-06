@@ -79,7 +79,7 @@ def render_supplier_scatter(df_supplier):
             .interactive()
         )
 
-        st.altair_chart(scatter_chart, use_container_width=False)
+        st.altair_chart(scatter_chart, width="content")
     else:
         st.warning("No supplier data available for selected options.")
 

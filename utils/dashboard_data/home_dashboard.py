@@ -4,11 +4,16 @@ import pandas as pd
 import streamlit as st
 from typing import List
 
-def fetch_salesperson_execution_summary(conn):
+def q(db: str, sch: str, obj: str) -> str:
+    """Qualify an object with database and schema."""
+    return f'{db}.{sch}.{obj}'
+
+def fetch_salesperson_execution_summary(conn, tenant_config):
     try:
-        query = """
+        db, sch = tenant_config["database"], tenant_config["schema"]
+        query = f"""
             SELECT *
-            FROM SALESPERSON_EXECUTION_SUMMARY
+            FROM {q(db, sch, "SALESPERSON_EXECUTION_SUMMARY")}
             ORDER BY EXECUTION_PERCENTAGE DESC
         """
         return pd.read_sql(query, conn)
@@ -17,21 +22,30 @@ def fetch_salesperson_execution_summary(conn):
         st.exception(e)
         return pd.DataFrame()
 
-def fetch_chain_schematic_data(conn):
+def fetch_chain_schematic_data(conn, tenant_config):
     try:
-        query = """
-            SELECT CHAIN_NAME, "Total_In_Schematic", "Purchased", "Purchased_Percentage"
-            FROM DELTAPACIFIC_DB.DELTAPACIFIC_SCH.CHAIN_SCHEMATIC_SUMMARY
-            ORDER BY "Purchased_Percentage" DESC
+        db, sch = tenant_config["database"], tenant_config["schema"]
+        query = f"""
+            SELECT
+                CHAIN_NAME,
+                SUM("In_Schematic") AS "Total_In_Schematic",
+                SUM("PURCHASED_YES_NO") AS "Purchased",
+                COALESCE(
+                    SUM("PURCHASED_YES_NO") / NULLIF(COUNT(*), 0), 0
+                )::FLOAT AS "Purchased_Percentage"
+            FROM {db}.{sch}.GAP_REPORT
+            GROUP BY CHAIN_NAME
+            ORDER BY "Purchased_Percentage" DESC;
         """
-
         df = pd.read_sql(query, conn)
 
-        # 👇 Ensure the field is numeric for Altair
+        # Keep this if downstream expects numeric
         df["Purchased_Percentage"] = pd.to_numeric(df["Purchased_Percentage"], errors="coerce")
 
-        return df
+        # If you want the old display format (e.g., "12.34%"), add:
+        # df["Purchased_Percentage"] = (df["Purchased_Percentage"] * 100).round(2).astype(str) + "%"
 
+        return df
     except Exception as e:
         st.error("❌ Failed to fetch chain schematic data")
         st.exception(e)

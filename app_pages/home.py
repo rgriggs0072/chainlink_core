@@ -18,6 +18,17 @@ from utils.home_ui_helpers import (
 
 from io import BytesIO
 
+
+# pull tenant config from session
+tenant_config = st.session_state.get("tenant_config")
+
+if not tenant_config:
+    st.error("❌ Tenant configuration not found — please log in again.")
+    st.stop()
+
+print("✅ tenant_config loaded:", tenant_config["database"], tenant_config["schema"])
+
+
 def render():
     
 
@@ -89,7 +100,7 @@ def display_dashboard():
 
         # --- Chain Bar Chart ---
         with row1_col2:
-            chain_summary_df = fetch_chain_schematic_data(conn)
+            chain_summary_df = fetch_chain_schematic_data(conn, tenant_config)
             if not chain_summary_df.empty:
                 bar_chart = (
                     alt.Chart(chain_summary_df)
@@ -115,7 +126,7 @@ def display_dashboard():
                     )
                     #.properties(width=700, height=400, background="#F8F2EB")
                 )
-                st.altair_chart(bar_chart, use_container_width=False)
+                st.altair_chart(bar_chart, width="content")
             else:
                 st.warning("No chain summary data available.")
 

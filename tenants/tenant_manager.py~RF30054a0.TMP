@@ -39,16 +39,16 @@ def load_tenant_config(tenant_id):
             encrypted_key_raw = encrypted_row[0]  # expected HEX string of Fernet token
 
         # --- 3) Prepare bytes for Fernet.decrypt() ---
-      
+        # debug fingerprint of the stored value
         raw = encrypted_key_raw if isinstance(encrypted_key_raw, str) else str(encrypted_key_raw)
         raw_is_hex = all(c in "0123456789abcdefABCDEF" for c in raw) and (len(raw) % 2 == 0)
-          # debug fingerprint of the stored value
-        # print({
-        #     "tenant_id": tenant_id,
-        #     "raw_len": len(raw),
-        #     "raw_prefix": raw[:16],
-        #     "raw_is_hex": raw_is_hex,
-        # })
+
+        print({
+            "tenant_id": tenant_id,
+            "raw_len": len(raw),
+            "raw_prefix": raw[:16],
+            "raw_is_hex": raw_is_hex,
+        })
 
         try:
             if raw_is_hex:
@@ -65,11 +65,11 @@ def load_tenant_config(tenant_id):
             return None
 
         # more debug (stable fingerprint of the token bytes)
-        # print({
-        #     "token_sha1": hashlib.sha1(token).hexdigest().upper(),
-        #     "token_prefix_bytes": token[:6],
-        #     "token_len": len(token),
-        # })
+        print({
+            "token_sha1": hashlib.sha1(token).hexdigest().upper(),
+            "token_prefix_bytes": token[:6],
+            "token_len": len(token),
+        })
 
         # --- 4) Decrypt with Fernet ---
         try:
@@ -99,10 +99,7 @@ def load_tenant_config(tenant_id):
             "role":           row[7],
         }
 
-       
-
-       
-
+        print("🧩 tenant_config user:", tenant_config["snowflake_user"])
 
         return tenant_config
 

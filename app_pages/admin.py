@@ -238,7 +238,7 @@ def render():
             if rows:
                 st.dataframe(
                     [{"Email": r[0], "Timestamp": r[1], "IP Address": r[2]} for r in rows],
-                    use_container_width=True
+                    width="stretch"
                 )
             else:
                 st.info("No failed login attempts recorded.")

@@ -44,10 +44,14 @@
     <Compile Include="auth\login.py" />
     <Compile Include="auth\reset_password.py" />
     <Compile Include="chainlink_core.py" />
+    <Compile Include="encrypt_pem_to_hex.py" />
     <Compile Include="key_checker.py" />
     <Compile Include="nav\menu_styles.py" />
     <Compile Include="nav\navigation_bar.py" />
     <Compile Include="provision_keys.py" />
+    <Compile Include="reencrypt_local.py" />
+    <Compile Include="reencrypt_local_b64.py" />
+    <Compile Include="reencrypt_service_key.py" />
     <Compile Include="sf_connector\service_connector.py" />
     <Compile Include="tenants\tenant_manager.py" />
     <Compile Include="test_pages\test_distro_grid.py" />
@@ -66,11 +70,12 @@
     <Compile Include="utils\templates\email_templates.py" />
     <Compile Include="utils\templates\__init__.py" />
     <Compile Include="utils\ui_helpers.py" />
+    <Compile Include="verify_and_connect_prod.py" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="auth\" />
     <Folder Include="images\" />
-    <Folder Include="images\DeltaPacific\" />
+    <Folder Include="images\DELTAPACIFICBEV\" />
     <Folder Include="app_pages\" />
     <Folder Include="images\Default_Logo\" />
     <Folder Include="nav\" />
@@ -85,7 +90,7 @@
   <ItemGroup>
     <Content Include="chainlinkanalytics_logo.png" />
     <Content Include="images\Default_Logo\default_logo.png" />
-    <Content Include="images\DeltaPacific\DeltaPacific_Logo.jpg" />
+    <Content Include="images\DELTAPACIFICBEV\DELTAPACIFICBEV_Logo.jpg" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
