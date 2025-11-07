@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 from sf_connector.service_connector import get_service_account_connection
 
 def fetch_user_credentials():
@@ -12,7 +12,7 @@ def fetch_user_credentials():
     rows = cur.fetchall()
     conn.close()
 
-    credentials = {"usernames": {}}  # ✅ REQUIRED FORMAT
+    credentials = {"usernames": {}}  # ? REQUIRED FORMAT
     for tenant_id, email, hashed_pw in rows:
         email_lc = email.lower()
         credentials["usernames"][email_lc] = {

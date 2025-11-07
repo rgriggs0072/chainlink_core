@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import altair as alt
 from io import BytesIO
@@ -56,7 +56,7 @@ def render_salesperson_and_gap_summary(col1, col2, df_sales, conn):
 
 
 def render_supplier_scatter(df_supplier):
-   # st.subheader("?? Supplier Performance Scatter")
+   # st.subheader("📦 Supplier Performance Scatter")
     if not df_supplier.empty:
         df_supplier["Purchased_Percentage_Display"] = df_supplier["Purchased_Percentage"] / 100.0
 
@@ -79,7 +79,7 @@ def render_supplier_scatter(df_supplier):
             .interactive()
         )
 
-        st.altair_chart(scatter_chart, width='content')
+        st.altair_chart(scatter_chart, use_container_width=False)
     else:
         st.warning("No supplier data available for selected options.")
 
@@ -112,4 +112,4 @@ def render_chain_bar_chart(container, df: pd.DataFrame):
         )
         .properties(width=500, height=300, background="#F8F2EB")
     )
-    container.altair_chart(chart, width='stretch')
+    container.altair_chart(chart, use_container_width=True)

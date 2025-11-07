@@ -1,6 +1,5 @@
 ﻿import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pandas.io.sql")
-
 import streamlit as st
 import snowflake.connector as snowflake_connector
 from packaging import version  # ✅ to handle version parsing

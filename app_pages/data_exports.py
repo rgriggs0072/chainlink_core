@@ -1,4 +1,4 @@
-﻿# app_pages/data_exports.py
+# app_pages/data_exports.py
 
 import streamlit as st
 import pandas as pd
@@ -6,28 +6,28 @@ from io import BytesIO
 from sf_connector.service_connector import connect_to_tenant_snowflake
 
 def render():
-    st.title("📤 Data Exports")
+    st.title("?? Data Exports")
     st.markdown("Download existing data for your selected chain or across all chains.")
 
     report_type = st.selectbox("Select Report Type", ["Distro Grid", "Reset Schedule"])
 
-    # ✅ Get tenant-specific connection info from session state
+    # ? Get tenant-specific connection info from session state
     toml_info = st.session_state.get("toml_info")
     if not toml_info:
         st.error("Tenant configuration not found. Please log in again.")
         return
 
-    # ✅ Connect to tenant Snowflake using secure key
+    # ? Connect to tenant Snowflake using secure key
     conn = connect_to_tenant_snowflake(toml_info)
     if not conn:
-        st.error("❌ Unable to connect to Snowflake.")
+        st.error("? Unable to connect to Snowflake.")
         return
 
     database = toml_info["database"]
     schema = toml_info["schema"]
     full_table_prefix = f"{database}.{schema}"
 
-    # 🔄 Fetch chains from the DISTRO_GRID table
+    # ?? Fetch chains from the DISTRO_GRID table
     with conn.cursor() as cur:
         cur.execute(f"SELECT DISTINCT CHAIN_NAME FROM {full_table_prefix}.DISTRO_GRID")
         chain_list = [row[0] for row in cur.fetchall()]
@@ -73,7 +73,7 @@ def render():
 
                 filename = f"{report_type.replace(' ', '_')}_{selected_chain if not download_all else 'All'}.xlsx"
                 st.download_button(
-                    label=f"📥 Download {report_type} Report",
+                    label=f"?? Download {report_type} Report",
                     data=output,
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

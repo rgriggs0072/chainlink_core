@@ -1,4 +1,4 @@
-﻿# app_pages/ai_narrative_report.py
+# app_pages/ai_narrative_report.py
 
 import streamlit as st
 import pandas as pd

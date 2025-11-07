@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import bcrypt
 import binascii
 from datetime import datetime, timezone
@@ -66,8 +66,8 @@ def reset_password():
         st.session_state.reset_successful = False
 
     if st.session_state.reset_successful:
-        st.success("✅ Your password has been reset successfully.")
-        if st.button("🔙 Return to Login"):
+        st.success("? Your password has been reset successfully.")
+        if st.button("?? Return to Login"):
             st.query_params.clear()
             st.session_state.reset_successful = False
             st.rerun()
@@ -131,7 +131,7 @@ def reset_password():
                     ))
                     conn.commit()
                 except Exception as e:
-                    st.warning(f"⚠️ Failed to write to RESET_LOGS: {e}")
+                    st.warning(f"?? Failed to write to RESET_LOGS: {e}")
 
                 st.session_state.reset_successful = True
                 st.rerun()

@@ -1,4 +1,4 @@
-﻿
+
 import streamlit as st
 import pandas as pd
 import snowflake.connector
@@ -6,7 +6,7 @@ from sf_connector.service_connector import get_service_account_connection
 
 # --- Admin: Reset Logs Viewer ---
 def render():
-   # st.title("🔐 Password Reset Logs")
+   # st.title("?? Password Reset Logs")
     st.markdown("View recent password reset attempts across your tenant.")
 
     try:
@@ -25,7 +25,7 @@ def render():
         df = pd.DataFrame(rows, columns=columns)
 
         # Optional filters
-        with st.expander("🔍 Filter Results"):
+        with st.expander("?? Filter Results"):
             selected_email = st.text_input("Filter by Email")
             success_filter = st.selectbox("Success Status", ["All", "Success", "Failure"])
 
@@ -37,7 +37,7 @@ def render():
             elif success_filter == "Failure":
                 df = df[df["SUCCESS"] == False]
 
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
     except Exception as e:
         st.error("Failed to load reset logs.")

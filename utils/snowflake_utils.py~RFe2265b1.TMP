@@ -25,6 +25,11 @@ def _q(*parts: str) -> str:
     return ".".join(f'"{p}"' for p in parts if p)
 
 
+import pandas as pd
+import streamlit as st
+
+def _q(*parts: str) -> str:
+    return ".".join(f'"{p}"' for p in parts if p)
 
 def get_tenant_sales_report(conn=None, tenant_config=None, days: int = 90) -> pd.DataFrame:
     """
@@ -37,7 +42,6 @@ def get_tenant_sales_report(conn=None, tenant_config=None, days: int = 90) -> pd
     # --- normalize inputs ---
     conn = conn or st.session_state.get("conn")
     tenant_config = tenant_config or st.session_state.get("tenant_config")
-
 
     if not conn or not tenant_config:
         st.error("❌ Missing connection or tenant configuration.")

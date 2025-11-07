@@ -1,7 +1,7 @@
-﻿import streamlit as st
+import streamlit as st
 
 def render():
-    st.title("🧾 Import Distributor Report")
+    st.title("?? Import Distributor Report")
     st.write("This is the interface to upload and validate distributor report files.")
 
     uploaded_file = st.file_uploader("Upload distributor report (.xlsx, .csv)", type=["xlsx", "csv"])

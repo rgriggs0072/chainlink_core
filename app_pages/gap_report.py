@@ -1,4 +1,4 @@
-﻿# ---------- gap_report.py ----------
+# ---------- gap_report.py ----------
 
 import streamlit as st
 import pandas as pd
@@ -8,11 +8,11 @@ from utils.reports_utils import create_gap_report
 from utils.snowflake_utils import  fetch_distinct_values
 
 def render():
-    st.title("📉 Gap Report Generator")
+    st.title("?? Gap Report Generator")
 
     conn = st.session_state.get("conn")
     if not conn:
-        st.error("❌ Snowflake connection not available.")
+        st.error("? Snowflake connection not available.")
         return
 
     # Fetch filter options
@@ -21,7 +21,7 @@ def render():
         store_options = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
         supplier_options = fetch_distinct_values(conn, "SUPPLIER_COUNTY", "SUPPLIER")
     except Exception as e:
-        st.error(f"❌ Failed to fetch filter values: {e}")
+        st.error(f"? Failed to fetch filter values: {e}")
         return
 
     for options in [salesperson_options, store_options, supplier_options]:
@@ -43,7 +43,7 @@ def render():
             temp_file_path = create_gap_report(conn, salesperson, store, supplier)
 
             if not temp_file_path:
-                st.error("❌ Report generation failed.")
+                st.error("? Report generation failed.")
                 return
 
             with open(temp_file_path, "rb") as f:
@@ -57,9 +57,9 @@ def render():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # ✅ Clean up temp file
+            # ? Clean up temp file
             try:
                 os.remove(temp_file_path)
             except Exception as e:
-                st.warning(f"⚠️ Failed to delete temporary file: {e}")
+                st.warning(f"?? Failed to delete temporary file: {e}")
 

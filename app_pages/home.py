@@ -1,4 +1,4 @@
-﻿# ------------- home.py ----------------
+# ------------- home.py ----------------
 
 import streamlit as st
 import pandas as pd
@@ -15,6 +15,7 @@ from utils.home_ui_helpers import (
     render_execution_summary_card,
     render_chain_bar_chart
 )
+
 
 from io import BytesIO
 
@@ -38,10 +39,10 @@ def display_dashboard():
     if not toml_info:
         st.error("Tenant information not found.")
         return
-
+    tenant_config = st.session_state.get("tenant_config")
     conn = st.session_state.get("conn")
     if not conn:
-        st.error("Database connection not found.")
+        st.error("Missing connection or tenant_config in session.")
         return
 
 
@@ -89,38 +90,37 @@ def display_dashboard():
 
         # --- Chain Bar Chart ---
         with row1_col2:
-            chain_summary_df = fetch_chain_schematic_data(conn)
+            # normalize from session in case local var is None/out-of-scope
+            conn = st.session_state.get("conn", conn if "conn" in locals() else None)
+            tenant_config = tenant_config or st.session_state.get("tenant_config")
+
+            if not conn or not tenant_config:
+                st.error("? Missing connection or tenant_config in session.")
+                st.info(f"has_conn={conn is not None}, has_tc={tenant_config is not None}")
+                st.stop()
+
+            chain_summary_df = fetch_chain_schematic_data(conn, tenant_config)
             if not chain_summary_df.empty:
                 bar_chart = (
                     alt.Chart(chain_summary_df)
                     .mark_bar()
                     .encode(
-                        x=alt.X("CHAIN_NAME", title="Chain"),
-                        y=alt.Y("Total_In_Schematic", title="In Schematic"),
-                        color=alt.Color("CHAIN_NAME", scale=alt.Scale(scheme="viridis")),
+                        x=alt.X("CHAIN_NAME:N", title="Chain"),
+                        y=alt.Y("Total_In_Schematic:Q", title="In Schematic"),
+                        color=alt.Color("CHAIN_NAME:N", scale=alt.Scale(scheme="viridis")),
                         tooltip=["CHAIN_NAME", "Total_In_Schematic", "Purchased", "Purchased_Percentage"]
                     )
-                    .properties(
-                        width=800,
-                        height=310,
-                        background="#F8F2EB"
-                    ).configure_title(
-                        align='center',
-                        fontSize=16
-                    ).encode(
-                        # text=alt.Text('PURCHASED_PERCENTAGE:Q', format='.2f')
-                        text=alt.Text('CHAIN_NAME')
-                    ).configure_mark(
-                        fontSize=14
-                    )
-                    #.properties(width=700, height=400, background="#F8F2EB")
+                    .properties(width=800, height=310, background="#F8F2EB")
+                    .configure_title(align="center", fontSize=16)
+                    .configure_mark(fontSize=14)
                 )
-                st.altair_chart(bar_chart, use_container_width=False)
+                # Streamlit deprecation: replace use_container_width
+                st.altair_chart(bar_chart, width="content")
             else:
                 st.warning("No chain summary data available.")
 
     except Exception as e:
-        row1_col1.error("❌ Failed to render execution summary or bar chart")
+        row1_col1.error("? Failed to render execution summary or bar chart")
         row1_col1.exception(e)
 
     st.markdown("---")
@@ -189,7 +189,7 @@ def display_dashboard():
                 )
 
         except Exception as e:
-            row2_col1.error("❌ Failed to load salesperson summary")
+            row2_col1.error("? Failed to load salesperson summary")
             row2_col1.exception(e)
 
 
@@ -258,12 +258,12 @@ def display_dashboard():
             file_name="gap_history_report.xlsx"
         )
     except Exception as e:
-        row2_col2.error("❌ Failed to load gap pivot table")
+        row2_col2.error("? Failed to load gap pivot table")
         row2_col2.exception(e)
 
 
    # ---------------- 3. Supplier Scatter Plot ----------------
-    st.subheader("📦 Supplier Performance Scatter")
+    st.subheader("?? Supplier Performance Scatter")
 
     st.markdown("""
         <style>
@@ -281,7 +281,7 @@ def display_dashboard():
    
 
 
-    # ✅ Inject supplier multiselect just above the chart logic
+    # ? Inject supplier multiselect just above the chart logic
     render_supplier_filter()
 
     selected_suppliers = st.session_state.get("selected_suppliers", [])

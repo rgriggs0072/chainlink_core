@@ -84,7 +84,7 @@ def render_sidebar_header(username, tenant_config, authenticator):
         st.markdown("---")
         st.markdown(
             "<div style='font-size: 0.65rem; color: gray;'>"
-            "Â© 2025 Chainlink Analytics LLC. All rights reserved."
+            "© 2025 Chainlink Analytics LLC. All rights reserved."
             "</div>",
             unsafe_allow_html=True
         )
