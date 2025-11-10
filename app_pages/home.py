@@ -263,7 +263,7 @@ def display_dashboard():
 
 
    # ---------------- 3. Supplier Scatter Plot ----------------
-    st.subheader("?? Supplier Performance Scatter")
+    st.subheader("Supplier Performance Scatter")
 
     st.markdown("""
         <style>

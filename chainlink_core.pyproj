@@ -30,6 +30,7 @@
     <Compile Include="app_pages\data_exports.py" />
     <Compile Include="app_pages\distro_grid.py" />
     <Compile Include="app_pages\distro_grid_sections.py" />
+    <Compile Include="app_pages\email_gap_report.py" />
     <Compile Include="app_pages\gap_report.py" />
     <Compile Include="app_pages\home.py" />
     <Compile Include="app_pages\import_distributor_report.py" />

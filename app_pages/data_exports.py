@@ -6,7 +6,7 @@ from io import BytesIO
 from sf_connector.service_connector import connect_to_tenant_snowflake
 
 def render():
-    st.title("?? Data Exports")
+    st.title("Data Exports")
     st.markdown("Download existing data for your selected chain or across all chains.")
 
     report_type = st.selectbox("Select Report Type", ["Distro Grid", "Reset Schedule"])
@@ -73,7 +73,7 @@ def render():
 
                 filename = f"{report_type.replace(' ', '_')}_{selected_chain if not download_all else 'All'}.xlsx"
                 st.download_button(
-                    label=f"?? Download {report_type} Report",
+                    label=f"Download {report_type} Report",
                     data=output,
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

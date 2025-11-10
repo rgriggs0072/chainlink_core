@@ -19,7 +19,7 @@ from nav.navigation_bar import render_navigation, render_format_upload_submenu, 
 # --- Page Config ---
 st.set_page_config(
     page_title="Chainlink Analytics",
-    page_icon="??",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -75,7 +75,7 @@ def render_sidebar_header(username, tenant_config, authenticator):
         if image:
             st.image(image, width='content')
         else:
-            st.warning("?? Logo not available")
+            st.warning("Logo not available")
 
         st.success(f"Welcome, {username}!")
 
@@ -112,7 +112,7 @@ def main():
             return
 
         if is_user_locked_out(username_lc):
-            st.error("?? Your account is locked. Please contact your administrator.")
+            st.error("Your account is locked. Please contact your administrator.")
             return
 
         # ? Auth OK
@@ -123,7 +123,7 @@ def main():
         # ? Load and validate tenant config
         tenant_config = load_tenant_config(user_entry["tenant_id"])
         if not isinstance(tenant_config, dict):
-            st.error("? Tenant configuration failed to load or is not a dict.")
+            st.error("Tenant configuration failed to load or is not a dict.")
             return
 
         # ? Immediately store for downstream pages
@@ -151,7 +151,7 @@ def main():
 
         selected_main = render_navigation()
         if not selected_main:
-            st.error("?? Navigation menu failed to render or returned no selection.")
+            st.error("Navigation menu failed to render or returned no selection.")
             return
 
         if selected_main == "Home":
@@ -170,10 +170,14 @@ def main():
                 import app_pages.ai_narrative_report as page
                 page.render()
             elif report_page == "Placement Intelligence":
-                import app_pages.ai_placement_intelligence as page  # ? ADD THIS LINE
+                import app_pages.ai_placement_intelligence as page
+                page.render()
+            elif report_page == "Email Gap Report":   # <-- add this block
+                import app_pages.email_gap_report as page
                 page.render()
             else:
                 st.warning("Invalid report selection.")
+
 
 
         elif selected_main == "Format and Upload":
@@ -196,7 +200,7 @@ def main():
         if email_lc:
             increment_failed_attempts(email_lc)
             if is_user_locked_out(email_lc):
-                st.error("?? Account locked due to too many failed login attempts.")
+                st.error("Account locked due to too many failed login attempts.")
             else:
                 st.error("Username or password incorrect")
         else:

@@ -45,7 +45,7 @@ def render_navigation():
 def render_reports_submenu():
     submenu = option_menu(
         menu_title="",
-        options=["Gap Report", "Data Exports", "AI-Narrative Report", "Placement Intelligence"],
+        options=["Gap Report", "Email Gap Report", "Data Exports", "AI-Narrative Report", "Placement Intelligence"],
         icons=["file-bar-graph", "file-spreadsheet", "file-earmark-text","search"],
         menu_icon="bar-chart",
         default_index=0,

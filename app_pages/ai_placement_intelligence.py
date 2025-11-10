@@ -16,7 +16,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 # ?? Placement Intelligence: AI-Powered Analytics
 # ----------------------------------------
 def render():
-    st.title("?? Placement Intelligence")
+    st.title("Placement Intelligence")
     st.markdown("Gain AI insights on item placements by comparing your current grid vs. archived seasons.")
     
     # ?? Load context
@@ -38,14 +38,14 @@ def render():
     # ? Action buttons
     col1, col2 = st.columns([1, 1])
     with col1:
-        run_compare = st.button("?? Run Placement Comparison")
+        run_compare = st.button("Run Placement Comparison")
     with col2:
-        run_ai = st.button("?? Generate AI Summary")
+        run_ai = st.button("Generate AI Summary")
 
     # ?? Comparison output
     if run_compare and chain and season:
         with st.spinner("Comparing DISTRO_GRID vs ARCHIVE ..."):
-            st.subheader("?? Comparison Results")
+            st.subheader("Comparison Results")
 
             # Run the actual comparison
             new_df, removed_df = compare_current_vs_archived(conn, chain, season)
@@ -64,10 +64,10 @@ def render():
             new_by_mfg = new_df.groupby("MANUFACTURER").size().reset_index(name="New Placements")
             removed_by_mfg = removed_df.groupby("MANUFACTURER").size().reset_index(name="Removed Placements")
 
-            st.markdown("### ?? New Placements by Manufacturer")
+            st.markdown("New Placements by Manufacturer")
             st.dataframe(new_by_mfg)
 
-            st.markdown("### ? Removed Placements by Manufacturer")
+            st.markdown("Removed Placements by Manufacturer")
             st.dataframe(removed_by_mfg)
 
 
@@ -75,7 +75,7 @@ def render():
        # ?? AI Output
     if run_ai and chain and season:
         with st.spinner("Talking to the AI..."):
-            st.subheader("?? AI Narrative Summary")
+            st.subheader("AI Narrative Summary")
 
             # ?? Pull previous comparison data
             new_df = st.session_state.get("new_df")
@@ -83,7 +83,7 @@ def render():
 
             if new_df is not None and removed_df is not None:
                 ai_summary = generate_ai_summary_text(new_df, removed_df, chain, season)
-                st.markdown("### ?? AI Summary")
+                st.markdown("AI Summary")
                 st.markdown(ai_summary)
             else:
                 st.warning("Please run the comparison first before generating an AI summary.")

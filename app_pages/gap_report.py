@@ -8,7 +8,7 @@ from utils.reports_utils import create_gap_report
 from utils.snowflake_utils import  fetch_distinct_values
 
 def render():
-    st.title("?? Gap Report Generator")
+    st.title("Gap Report Generator")
 
     conn = st.session_state.get("conn")
     if not conn:
@@ -43,7 +43,7 @@ def render():
             temp_file_path = create_gap_report(conn, salesperson, store, supplier)
 
             if not temp_file_path:
-                st.error("? Report generation failed.")
+                st.error("Report generation failed.")
                 return
 
             with open(temp_file_path, "rb") as f:
@@ -61,5 +61,5 @@ def render():
             try:
                 os.remove(temp_file_path)
             except Exception as e:
-                st.warning(f"?? Failed to delete temporary file: {e}")
+                st.warning(f"Failed to delete temporary file: {e}")
 
