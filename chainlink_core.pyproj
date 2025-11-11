@@ -61,6 +61,7 @@
     <Compile Include="utils\home_ui_helpers.py" />
     <Compile Include="utils\load_company_data_helpers.py" />
     <Compile Include="utils\logout_utils.py" />
+    <Compile Include="utils\org_utils.py" />
     <Compile Include="utils\reports_utils.py" />
     <Compile Include="utils\reset_schedule_helpers.py" />
     <Compile Include="utils\snowflake_utils.py" />

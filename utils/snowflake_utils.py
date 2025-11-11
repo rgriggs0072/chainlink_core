@@ -9,7 +9,6 @@ import os
 import jwt
 from datetime import datetime, timedelta
 from sf_connector.service_connector import get_service_account_connection
-# in app_pages/home.py (and anywhere else)
 from utils.dashboard_data.home_dashboard import fetch_chain_schematic_data
 
 import numpy as np
