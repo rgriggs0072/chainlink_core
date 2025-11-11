@@ -1,13 +1,17 @@
 ﻿"""
 Email Gap Report (per-salesperson, email-ready)
 
+Page Overview
+-------------
 Generates “Gap Push” emails that summarize execution by salesperson and list
-only true gaps (rows with numeric sr_upc IS NULL).
+only true gaps (rows with numeric sr_upc IS NULL). Filters are wrapped in a
+submit-only form to prevent full-page reruns while editing. Results are cached
+in session_state and only recomputed when submitted filters change.
 
-Key logic:
------------
+Key logic
+---------
 IN SCHEMATIC = count(In_Schematic = 1)
-FULFILLED    = count(PURCHASED_YES_NO = 'Yes') across ALL rows
+FULFILLED    = count(PURCHASED_YES_NO in {1,'1','YES','Y','TRUE'}) across ALL rows
 GAPS         = IN SCHEMATIC - FULFILLED
 % EXECUTION  = FULFILLED / IN SCHEMATIC
 Detail table = only rows where sr_upc IS NULL
@@ -25,6 +29,18 @@ import streamlit as st
 PAGE_TITLE = "Email Gap Report"
 TARGET_EXECUTION = 0.90  # 90% goal
 
+# -------------------------------
+# Session keys for this page
+# -------------------------------
+DEFAULT_KEYS = {
+    "egp_filters": None,        # last executed filters snapshot
+    "egp_results": None,        # {"html_by_salesperson": dict, "first_sp": str}
+    "egp_filters_hash": None,   # stable, order-insensitive hash of filters
+}
+for k, v in DEFAULT_KEYS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
 
 # -------------------------------------------------------
 # Helpers
@@ -36,6 +52,15 @@ def _build_in_clause(column: str, values: Iterable[str]) -> Tuple[str, List[str]
         return "", []
     placeholders = ", ".join(["%s"] * len(vals))
     return f"{column} IN ({placeholders})", vals
+
+
+def _filters_hash(chains: List[str], suppliers: List[str], salespeople: List[str]):
+    """Stable, order-insensitive representation of current filter choices."""
+    return (
+        tuple(sorted(chains or [])),
+        tuple(sorted(suppliers or [])),
+        tuple(sorted(salespeople or [])),
+    )
 
 
 # -------------------------------------------------------
@@ -56,7 +81,10 @@ def load_dimensions(_con) -> Dict[str, List[str]]:
 
 
 def fetch_gap_df(con, chains: List[str], suppliers: List[str], salespeople: List[str], only_gaps=False) -> pd.DataFrame:
-    """Fetch GAP_REPORT rows with optional filters; only_gaps=True filters sr_upc IS NULL."""
+    """
+    Fetch GAP_REPORT rows with optional filters.
+    only_gaps=True adds: "sr_upc" IS NULL  (sr_upc is numeric in your pipeline)
+    """
     where_parts, params = [], []
 
     for col, vals in [("CHAIN_NAME", chains), ("SUPPLIER", suppliers), ("SALESPERSON", salespeople)]:
@@ -112,17 +140,14 @@ def compute_salesperson_metrics(df_sp: pd.DataFrame) -> dict:
     - IN_SCHEMATIC = count(In_Schematic == 1)
     - FULFILLED    = count(PURCHASED_YES_NO in {1, '1', 'YES', 'Y', 'TRUE'})
     """
-    # Normalize types
     in_schem_col = pd.to_numeric(df_sp["In_Schematic"], errors="coerce").fillna(0)
     in_schematic = int((in_schem_col == 1).sum())
 
     py_col = df_sp["PURCHASED_YES_NO"].fillna("")
 
-    # string view
     s_str = py_col.astype(str).str.strip().str.upper()
     str_yes = s_str.isin({"YES", "Y", "TRUE", "1"})
 
-    # numeric view
     s_num = pd.to_numeric(py_col, errors="coerce")
     num_yes = (s_num == 1)
 
@@ -141,7 +166,6 @@ def compute_salesperson_metrics(df_sp: pd.DataFrame) -> dict:
         "target_at_90": target_at_90,
         "gaps_away_90": gaps_away_90,
     }
-
 
 
 # -------------------------------------------------------
@@ -235,7 +259,12 @@ def build_zip(html_map: Dict[str, str]) -> bytes:
 # Page
 # -------------------------------------------------------
 def render():
-    """Main page entry."""
+    """
+    Main page entry.
+    - Wrap filters in a form (no reruns while editing)
+    - Only compute when submitted filters actually change
+    - Persist results in session_state to avoid recompute on minor UI events
+    """
     st.title(PAGE_TITLE)
 
     con = st.session_state.get("conn")
@@ -245,40 +274,68 @@ def render():
 
     dims = load_dimensions(con)
 
-    c1, c2, c3 = st.columns(3)
-    chains = c1.multiselect("Chains", dims["chains"], placeholder="All")
-    suppliers = c2.multiselect("Suppliers", dims["suppliers"], placeholder="All")
-    salespeople = c3.multiselect("Salespeople", dims["salespeople"], placeholder="All")
+    # -------- Filter form (no reruns while interacting) --------
+    with st.form("egp_filters_form", clear_on_submit=False):
+        c1, c2, c3 = st.columns(3)
+        chains = c1.multiselect("Chains", dims["chains"], placeholder="All", key="egp_chains")
+        suppliers = c2.multiselect("Suppliers", dims["suppliers"], placeholder="All", key="egp_suppliers")
+        salespeople = c3.multiselect("Salespeople", dims["salespeople"], placeholder="All", key="egp_salespeople")
 
-    if st.button("Generate Emails", type="primary"):
-        # full data for metrics
-        df_all = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=False)
-        # filtered data for gap detail table
-        df_gaps = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=True)
+        submitted = st.form_submit_button("Generate Emails")
 
-        if df_all.empty:
-            st.warning("No rows matched your filters.")
-            return
 
-        html_by_salesperson: Dict[str, str] = {}
-        for sp in sorted(df_all["SALESPERSON"].dropna().unique()):
-            sp_all = df_all[df_all["SALESPERSON"] == sp]
-            sp_gaps = df_gaps[df_gaps["SALESPERSON"] == sp]
-            metrics = compute_salesperson_metrics(sp_all)
-            html_by_salesperson[sp] = render_email_html(sp, metrics, sp_gaps)
+    # -------- Execute once per submit when filters changed --------
+    run_needed = False
+    if submitted:
+        new_hash = _filters_hash(chains, suppliers, salespeople)
+        if new_hash != st.session_state["egp_filters_hash"]:
+            st.session_state["egp_filters_hash"] = new_hash
+            st.session_state["egp_filters"] = {
+                "chains": chains, "suppliers": suppliers, "salespeople": salespeople
+            }
+            run_needed = True
 
-        first_sp = next(iter(html_by_salesperson))
+    if run_needed:
+        with st.spinner("Building emails…"):
+            # 1) full data for metrics
+            df_all = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=False)
+            # 2) true gaps for detail table
+            df_gaps = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=True)
+
+            if df_all.empty:
+                st.session_state["egp_results"] = None
+                st.warning("No rows matched your filters.")
+            else:
+                html_by_salesperson: Dict[str, str] = {}
+                for sp in sorted(df_all["SALESPERSON"].dropna().unique()):
+                    sp_all = df_all[df_all["SALESPERSON"] == sp]
+                    sp_gaps = df_gaps[df_gaps["SALESPERSON"] == sp]
+                    metrics = compute_salesperson_metrics(sp_all)
+                    html_by_salesperson[sp] = render_email_html(sp, metrics, sp_gaps)
+
+                first_sp = next(iter(html_by_salesperson))
+                st.session_state["egp_results"] = {
+                    "html_by_salesperson": html_by_salesperson,
+                    "first_sp": first_sp,
+                }
+
+    # -------- Render results from state (no recompute) --------
+    res = st.session_state.get("egp_results")
+    if res:
+        html_by_salesperson = res["html_by_salesperson"]
+        first_sp = res["first_sp"]
+
         with st.expander(f"Preview: {first_sp}", expanded=True):
             st.components.v1.html(html_by_salesperson[first_sp], height=600, scrolling=True)
 
-        left, right = st.columns(2)
+        left, right, clear_col = st.columns([1, 1, 0.5])
         safe_name = first_sp.replace("/", "-").replace("\\", "-")
-        file_name = f"{safe_name}_gap_email.html"
         left.download_button(
             label=f"Download {first_sp} HTML",
-            file_name=file_name,
+            file_name=f"{safe_name}_gap_email.html",
             data=html_by_salesperson[first_sp],
             mime="text/html",
+            use_container_width=True,
         )
 
         zip_bytes = build_zip(html_by_salesperson)
@@ -287,7 +344,12 @@ def render():
             file_name=f"gap_push_emails_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
             data=zip_bytes,
             mime="application/zip",
+            use_container_width=True,
         )
+
+        if clear_col.button("Clear", use_container_width=True):
+            st.session_state["egp_results"] = None
+            st.rerun()
 
 
 if __name__ == "__main__":

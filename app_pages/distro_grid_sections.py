@@ -21,12 +21,12 @@ def render_distro_grid_formatter_section():
     Renders the UI for formatting a Distribution Grid spreadsheet before uploading.
     Includes chain selection, format type, upload field, and a button to initiate formatting.
     """
-    st.subheader("?? Format Distribution Grid Spreadsheet")
+    st.subheader("Format Distribution Grid Spreadsheet")
 
     # ?? Get Snowflake connection
     conn = st.session_state.get("conn")
     if not conn:
-        st.error("? Snowflake connection not found.")
+        st.error("Snowflake connection not found.")
         return
 
     # ?? Fetch available chain names
@@ -34,25 +34,26 @@ def render_distro_grid_formatter_section():
         chain_options = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
         chain_options.sort()
     except Exception as e:
-        st.error(f"? Could not load chain names: {e}")
+        st.error(f"Could not load chain names: {e}")
         return
 
     # ?? Chain selector with placeholder
-    chain_options_with_placeholder = ["?? Select Chain"] + chain_options
+    chain_options_with_placeholder = ["Select Chain"] + chain_options
     selected_chain = st.selectbox(
         "Select Chain Name for This Format",
         chain_options_with_placeholder,
         key="distro_grid_chain_select"
     )
 
-    if selected_chain == "?? Select Chain":
-        st.warning("?? Please select a chain before formatting.")
+    if selected_chain == "Select Chain":
+        st.warning("Please select a chain before formatting.")
         st.stop()
 
     # ?? Template links
-    st.write("?? Download Template Files:")
-    st.markdown("[?? Pivot Table Template](https://github.com/rgriggs0072/ChainLinkAnalytics/raw/master/import_templates/Pivot_Table_Distro_Grid_Template.xlsx)")
-    st.markdown("[?? Standard Distro Grid Template](https://github.com/rgriggs0072/ChainLinkAnalytics/raw/master/import_templates/Distribution_Grid_Template.xlsx)")
+    st.write("Download Template Files:")
+   # Distro Grid templates (hosted in the new repo)
+    st.markdown("[Pivot Table Template]" "(https://raw.githubusercontent.com/rgriggs0072/chainlink_core/main/import_templates/Pivot_Table_Distro_Grid_Template.xlsx)")
+    st.markdown("[Standard Distro Grid Template]" "(https://raw.githubusercontent.com/rgriggs0072/chainlink_core/main/import_templates/standard_dg_upload_template.xlsx)")
     st.markdown("-----------------------------------------------------")
 
     # ?? Format type selector
@@ -71,9 +72,9 @@ def render_distro_grid_formatter_section():
     )
 
     # ?? Format trigger button
-    if uploaded_file and st.button("??? Format Now", key="format_distro_grid_btn"):
+    if uploaded_file and st.button("Format Now", key="format_distro_grid_btn"):
         try:
-            with st.spinner("?? Formatting distribution grid..."):
+            with st.spinner("Formatting distribution grid..."):
                 workbook = openpyxl.load_workbook(uploaded_file)
 
                 # Format according to selected type
@@ -96,14 +97,14 @@ def render_distro_grid_formatter_section():
 
             # ? Download button
             st.download_button(
-                label="?? Download Formatted Grid",
+                label="Download Formatted Grid",
                 data=buffer,
                 file_name=f"{selected_chain}_Formatted_Distro_Grid.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
         except Exception as e:
-            st.error(f"? Failed to format distribution grid: {e}")
+            st.error(f"Failed to format distribution grid: {e}")
 
 
 
@@ -115,12 +116,12 @@ def render_distro_grid_uploader_section():
     Validates selected chain and season, verifies file integrity, and enforces
     CHAIN_NAME match to prevent cross-chain data uploads.
     """
-    st.subheader("?? Upload Distribution Grid to Snowflake")
+    st.subheader("Upload Distribution Grid to Snowflake")
 
     # ?? Get Snowflake connection from session state
     conn = st.session_state.get("conn")
     if not conn:
-        st.error("? Snowflake connection not found.")
+        st.error("Snowflake connection not found.")
         return
 
     # ?? Fetch chain names from CUSTOMERS table
@@ -128,11 +129,11 @@ def render_distro_grid_uploader_section():
         chain_options = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
         chain_options.sort()
     except Exception as e:
-        st.error(f"? Could not load chain names: {e}")
+        st.error(f"Could not load chain names: {e}")
         return
 
     # ?? Chain selector (same key as formatter for continuity)
-    chain_options_with_placeholder = ["?? Select Chain"] + chain_options
+    chain_options_with_placeholder = ["Select Chain"] + chain_options
     selected_chain = st.selectbox(
         "Select Chain Name",
         chain_options_with_placeholder,
@@ -140,9 +141,9 @@ def render_distro_grid_uploader_section():
     )
 
     # ?? Season selector with placeholder
-    season_options_with_placeholder = ["?? Select Season"] + get_season_options()
+    season_options_with_placeholder = ["Select Season"] + get_season_options()
     selected_season = st.selectbox(
-        "?? Select Season for this Upload",
+        "Select Season for this Upload",
         options=season_options_with_placeholder,
         key="distro_grid_season_select"
     )
@@ -158,19 +159,19 @@ def render_distro_grid_uploader_section():
     if st.button("Upload Distribution Grid to Snowflake", key="upload_distro_grid_btn"):
         # ? Validate selections
         if selected_chain == "?? Select Chain":
-            st.error("? Please select a valid chain.")
+            st.error("Please select a valid chain.")
             return
-        if selected_season == "?? Select Season":
-            st.error("? Please select a valid season.")
+        if selected_season == "Select Season":
+            st.error("Please select a valid season.")
             return
         if not uploaded_file:
-            st.error("? Please upload a formatted distro grid file.")
+            st.error("Please upload a formatted distro grid file.")
             return
 
         try:
             # ?? Load file and preview first 5 rows
             df = pd.read_excel(uploaded_file, engine="openpyxl")
-            st.info("?? Preview of uploaded data:")
+            st.info("Preview of uploaded data:")
             st.dataframe(df.head())
 
             # ?? Normalize CHAIN_NAME values for comparison
@@ -182,7 +183,7 @@ def render_distro_grid_uploader_section():
             unique_chains_in_file = df["CHAIN_NAME"].dropna().unique()
 
             if not mismatched_rows.empty:
-                st.error(f"? Chain mismatch detected.\n\nSelected: `{selected_chain_clean}`\nFound in file: `{', '.join(unique_chains_in_file)}`")
+                st.error(f"Chain mismatch detected.\n\nSelected: `{selected_chain_clean}`\nFound in file: `{', '.join(unique_chains_in_file)}`")
                 st.warning(f"Rows that don't match the selected chain '{selected_chain_clean}':")
                 st.dataframe(mismatched_rows)
                 return
@@ -191,11 +192,11 @@ def render_distro_grid_uploader_section():
             enrich_with_customer_data(df, conn)
 
             # ?? Upload to Snowflake
-            with st.spinner("?? Uploading to Snowflake..."):
+            with st.spinner("Uploading to Snowflake..."):
                 upload_distro_grid_to_snowflake(df, selected_chain_clean, selected_season, update_spinner)
 
         except Exception as e:
-            st.error(f"? Failed to upload distro grid: {e}")
+            st.error(f"Failed to upload distro grid: {e}")
 
 
 

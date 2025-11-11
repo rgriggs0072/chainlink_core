@@ -7,7 +7,7 @@ from app_pages.distro_grid_sections import (
 )
 
 def render():
-    st.title("?? Distro Grid Formatter & Uploader")
+    st.title("Distro Grid Formatter & Uploader")
 
     # Section 1: Format the file
     render_distro_grid_formatter_section()

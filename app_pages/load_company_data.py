@@ -10,7 +10,7 @@ from app_pages.load_company_sections import (
 
 
 def render():
-    st.title("?? Format and Upload Company Data")
+    st.title("Format and Upload Company Data")
 
     render_sales_section()
     st.markdown("<hr>", unsafe_allow_html=True)

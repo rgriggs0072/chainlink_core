@@ -9,7 +9,7 @@ from app_pages.reset_schedule_sections import (
 )
 
 def render():
-    st.title("??? Reset Schedule Formatter & Uploader")
+    st.title("Reset Schedule Formatter & Uploader")
 
     render_reset_schedule_formatter_section()
     st.markdown("<hr>", unsafe_allow_html=True)

@@ -1,90 +1,134 @@
 ﻿# utils/auth_utils.py
+# ------------------------------------------------------------------------------
+# Centralized authentication & role utilities for Chainlink Core
+# Updated: now uses flattened USERDATA.ROLE (ADMIN / USER)
+# ------------------------------------------------------------------------------
 
 import secrets
-from datetime import datetime
-import snowflake.connector
-from  snowflake.connector import ProgrammingError
-from utils.email_utils import send_unlock_notification
 from datetime import datetime, timedelta, timezone
+import requests
+import bcrypt
+from snowflake.connector import ProgrammingError
 from sf_connector.service_connector import get_service_account_connection
+from utils.email_utils import send_unlock_notification
 from auth.forgot_password import send_reset_email
 
-import bcrypt
 
-import requests
-
+# ------------------------------------------------------------------------------
+# 🌐 Get client IP (for login logging)
+# ------------------------------------------------------------------------------
 def get_ip_address():
     try:
         return requests.get("https://api.ipify.org").text
-    except:
+    except Exception:
         return "unknown"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # 🛡️ is_admin_user(email, tenant_id)
-# Checks if the given user has an admin role (ROLE_ID = 1001)
-# Returns True if user is an admin, False otherwise.
-# ─────────────────────────────────────────────────────────────────────────────
-def is_admin_user(user_email, tenant_id):
+# Checks if user has ROLE = 'ADMIN' in USERDATA
+# ------------------------------------------------------------------------------
+def is_admin_user(user_email: str, tenant_id: str) -> bool:
     try:
         conn = get_service_account_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT ur.ROLE_ID
-            FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA u
-            JOIN TENANTUSERDB.CHAINLINK_SCH.USER_ROLES ur ON u.USER_ID = ur.USER_ID
-            WHERE u.EMAIL = %s AND u.TENANT_ID = %s
+            SELECT ROLE
+            FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
+            WHERE LOWER(EMAIL) = LOWER(%s)
+              AND TENANT_ID = %s
+              AND IS_ACTIVE = TRUE
+              AND COALESCE(IS_LOCKED, FALSE) = FALSE
+            LIMIT 1
         """, (user_email, tenant_id))
-        roles = [row[0] for row in cur.fetchall()]
+        row = cur.fetchone()
         cur.close()
         conn.close()
-        return 1001 in roles
+        if not row or not row[0]:
+            return False
+        return str(row[0]).strip().upper() == "ADMIN"
     except Exception as e:
         print(f"Role check failed: {e}")
         return False
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# 🔒 is user active?
+# Returns True if account is active
+# ------------------------------------------------------------------------------
+
+def get_user_status(email: str) -> tuple[bool | None, bool | None, bool]:
+    """
+    Returns (is_active, is_locked, exists) for EMAIL across tenants.
+    Use when auth_status is False to show clearer messages and avoid incrementing attempts on disabled users.
+    """
+    try:
+        from sf_connector.service_connector import get_service_account_connection
+        conn = get_service_account_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(IS_ACTIVE, TRUE), COALESCE(IS_LOCKED, FALSE)
+                FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
+                WHERE LOWER(EMAIL) = LOWER(%s)
+                LIMIT 1
+            """, (email,))
+            row = cur.fetchone()
+        conn.close()
+        if not row:
+            return (None, None, False)
+        return (bool(row[0]), bool(row[1]), True)
+    except Exception:
+        return (None, None, False)
+
+
+
+def is_user_active(email: str, tenant_id: str) -> bool:
+    try:
+        conn = get_service_account_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(IS_ACTIVE, TRUE)
+                FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
+                WHERE LOWER(EMAIL) = LOWER(%s) AND TENANT_ID = %s
+                LIMIT 1
+            """, (email, tenant_id))
+            row = cur.fetchone()
+        conn.close()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+# ------------------------------------------------------------------------------
 # 🔒 is_user_locked_out(email)
-# Checks if a user account is locked due to too many failed login attempts.
-# Returns True if locked out, False otherwise.
-# ─────────────────────────────────────────────────────────────────────────────
-def is_user_locked_out(email):
+# Returns True if account is currently locked
+# ------------------------------------------------------------------------------
+def is_user_locked_out(email: str) -> bool:
     try:
         conn = get_service_account_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT FAILED_ATTEMPTS, LOCKOUT_TIME
+            SELECT IS_LOCKED
             FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
-            WHERE EMAIL = %s
+            WHERE LOWER(EMAIL) = LOWER(%s)
         """, (email,))
         result = cur.fetchone()
         cur.close()
         conn.close()
-
-        if result:
-            attempts, lockout_time = result
-            if attempts >= 2:
-                if lockout_time is None:
-                    return True
-                return datetime.utcnow() < lockout_time + timedelta(minutes=15)
-        return False
+        return bool(result and result[0])
     except Exception as e:
         print(f"Lockout check failed: {e}")
         return False
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
 # 📉 increment_failed_attempts(email)
-# Increases the FAILED_ATTEMPTS count for a user by 1.
-# Locks the account if 5 or more failed attempts are reached.
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def increment_failed_attempts(email):
+# Increments FAILED_ATTEMPTS, locks after 3 tries, logs IP
+# ------------------------------------------------------------------------------
+def increment_failed_attempts(email: str):
     try:
         conn = get_service_account_connection()
         cur = conn.cursor()
 
-        # Get current failed attempts + tenant_id
         cur.execute("""
             SELECT FAILED_ATTEMPTS, TENANT_ID
             FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
@@ -97,7 +141,6 @@ def increment_failed_attempts(email):
             tenant_id = row[1]
             new_attempts = attempts + 1
 
-            # Update USERDATA
             if new_attempts >= 3:
                 cur.execute("""
                     UPDATE TENANTUSERDB.CHAINLINK_SCH.USERDATA
@@ -111,10 +154,10 @@ def increment_failed_attempts(email):
                     WHERE LOWER(EMAIL) = LOWER(%s)
                 """, (new_attempts, email))
 
-            # Log to FAILED_LOGINS
             ip_address = get_ip_address()
             cur.execute("""
-                INSERT INTO TENANTUSERDB.CHAINLINK_SCH.FAILED_LOGINS (EMAIL, TIMESTAMP, IP_ADDRESS, TENANT_ID)
+                INSERT INTO TENANTUSERDB.CHAINLINK_SCH.FAILED_LOGINS
+                (EMAIL, TIMESTAMP, IP_ADDRESS, TENANT_ID)
                 VALUES (%s, CURRENT_TIMESTAMP, %s, %s)
             """, (email, ip_address, tenant_id))
 
@@ -126,12 +169,11 @@ def increment_failed_attempts(email):
         print(f"Failed to increment attempts: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # 🔓 reset_failed_attempts(email)
-# Resets a user’s FAILED_ATTEMPTS to 0 and clears the LOCKOUT_TIME.
-# Usually called after a successful login.
-# ─────────────────────────────────────────────────────────────────────────────
-def reset_failed_attempts(email):
+# Clears failed login count + unlocks account
+# ------------------------------------------------------------------------------
+def reset_failed_attempts(email: str):
     try:
         conn = get_service_account_connection()
         cur = conn.cursor()
@@ -146,117 +188,95 @@ def reset_failed_attempts(email):
     except Exception as e:
         print(f"Failed to reset failed attempts: {e}")
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+# ------------------------------------------------------------------------------
 # 🔓 unlock_user_account(email)
-# Admin-level function to manually unlock a user account.
-# Resets FAILED_ATTEMPTS and clears LOCKOUT_TIME.
-# Returns (True, "message") if successful or (False, "error") on failure.
-# ─────────────────────────────────────────────────────────────────────────────
+# Admin-level manual unlock; logs event + sends notification
+# ------------------------------------------------------------------------------
 def unlock_user_account(email, unlocked_by=None, tenant_id=None, reason="Manual unlock"):
     try:
         conn = get_service_account_connection()
-        cursor = conn.cursor()
+        cur = conn.cursor()
 
-        # ✅ Step 1: Unlock the user
-        cursor.execute("""
+        # Step 1: Unlock user
+        cur.execute("""
             UPDATE TENANTUSERDB.CHAINLINK_SCH.USERDATA
             SET FAILED_ATTEMPTS = 0, IS_LOCKED = FALSE
             WHERE LOWER(EMAIL) = LOWER(%s)
         """, (email,))
 
-        # ✅ Step 2: Log the unlock
+        # Step 2: Log unlock
         if unlocked_by and tenant_id:
-            cursor.execute("""
-                INSERT INTO TENANTUSERDB.CHAINLINK_SCH.UNLOCK_LOGS (
-                    UNLOCKED_EMAIL, UNLOCKED_BY, TENANT_ID, REASON
-                )
+            cur.execute("""
+                INSERT INTO TENANTUSERDB.CHAINLINK_SCH.UNLOCK_LOGS
+                (UNLOCKED_EMAIL, UNLOCKED_BY, TENANT_ID, REASON)
                 VALUES (%s, %s, %s, %s)
             """, (email, unlocked_by, tenant_id, reason))
 
-        # ✅ Step 3: Get user's first name for email
-        cursor.execute("""
-            SELECT FIRST_NAME FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
+        # Step 3: Get first name for email
+        cur.execute("""
+            SELECT FIRST_NAME
+            FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
             WHERE LOWER(EMAIL) = LOWER(%s)
         """, (email,))
-        row = cursor.fetchone()
+        row = cur.fetchone()
         user_first_name = row[0] if row else "User"
 
         conn.commit()
-        cursor.close()
+        cur.close()
         conn.close()
 
-        # ✅ Step 4: Send unlock email
+        # Step 4: Send unlock email
         send_unlock_notification(email, first_name=user_first_name, unlocker_name=unlocked_by)
 
-        return True, "User unlocked."
+        return True, "User unlocked successfully."
 
     except Exception as e:
         return False, f"Error unlocking user: {e}"
 
-# ------ Section new user account ------
 
+# ------------------------------------------------------------------------------
+# 👤 create_user_account(conn, ...)
+# Creates a new user and sends reset/invite email
+# ------------------------------------------------------------------------------
 def create_user_account(conn, email, first_name, last_name, role_name, tenant_id):
     try:
-        cursor = conn.cursor()
+        cur = conn.cursor()
 
-        # Check for duplicate (email + tenant_id)
-        cursor.execute("""
+        # Prevent duplicates
+        cur.execute("""
             SELECT 1 FROM USERDATA
             WHERE LOWER(EMAIL) = LOWER(%s) AND TENANT_ID = %s
         """, (email, tenant_id))
-        dup_check = cursor.fetchone()
-
-        if dup_check:
+        if cur.fetchone():
             return False, "Email already exists."
 
-        # Create new user
-        next_id = cursor.execute("""
-            SELECT COALESCE(MAX(USER_ID), 0) + 1 FROM USERDATA
-        """).fetchone()[0]
-
+        # Generate new ID + token
+        next_id = cur.execute("SELECT COALESCE(MAX(USER_ID), 0) + 1 FROM USERDATA").fetchone()[0]
         token = secrets.token_urlsafe()
         expiry = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        insert_sql = """
+        # Insert user
+        cur.execute("""
             INSERT INTO USERDATA (
                 USER_ID, HASHED_PASSWORD, EMAIL, TENANT_ID,
-                FIRST_NAME, LAST_NAME, IS_ACTIVE,
-                FAILED_ATTEMPTS, LOCKOUT_TIME,
+                FIRST_NAME, LAST_NAME, ROLE, IS_ACTIVE,
+                FAILED_ATTEMPTS, IS_LOCKED,
                 RESET_TOKEN, TOKEN_EXPIRY
             )
-            VALUES (%s, %s, %s, %s, %s, %s, TRUE, 0, NULL, %s, %s)
-        """
-        cursor.execute(insert_sql, (
+            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, 0, FALSE, %s, %s)
+        """, (
             next_id, None, email, tenant_id,
-            first_name, last_name,
+            first_name, last_name, role_name.strip().upper(),
             token, expiry
         ))
 
+        conn.commit()
+        cur.close()
+
+        # Send reset email
         send_reset_email(email, token)
         return True, "✅ User created and invitation email sent."
 
     except Exception as e:
         return False, f"❌ Failed to create user: {e}"
-
-
-
-def is_user_locked_out(email):
-    try:
-        conn = get_service_account_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT IS_LOCKED
-            FROM TENANTUSERDB.CHAINLINK_SCH.USERDATA
-            WHERE LOWER(EMAIL) = LOWER(%s)
-        """, (email,))
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return result and result[0] == True
-    except Exception as e:
-        print(f"Lockout check failed: {e}")
-        return False
-
-
-
-

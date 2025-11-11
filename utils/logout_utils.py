@@ -11,6 +11,7 @@ def clear_auth_cookie(cookie_name="chainlink_token"):
 
 
 def handle_logout(authenticator, cookie_name="chainlink_token"):
+    st.session_state.pop("display_name", None)
     """Logs out the user, clears cookies and session state, and reruns the app."""
     if authenticator.logout("Logout", "sidebar", key="logout_key"):
         clear_auth_cookie(cookie_name)
