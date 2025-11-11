@@ -96,8 +96,6 @@ def render() -> None:
             if not chain_summary_df.empty:
                 chart = (
                     alt.Chart(chain_summary_df, background="#F8F2EB")
-                    # create a derived field for pretty tooltip
-                    .transform_calculate(Purchased_Percentage_pct='datum.Purchased_Percentage * 100')
                     .mark_bar()
                     .encode(
                         x=alt.X("CHAIN_NAME:N", title="Chain"),
@@ -107,9 +105,7 @@ def render() -> None:
                             "CHAIN_NAME",
                             "Total_In_Schematic",
                             "Purchased",
-                            alt.Tooltip("Purchased_Percentage_pct:Q",
-                                        title="Purchased_Percentage",
-                                        format=".2f"),  # -> 80.90
+                            alt.Tooltip("Purchased_Percentage:Q", title="Purchased %", format=".2%"),
                         ],
                     )
                     .properties(height=250)
@@ -118,6 +114,7 @@ def render() -> None:
                 st.altair_chart(chart, use_container_width=True)
             else:
                 st.warning("No chain summary data available.")
+
 
 
     except Exception as e:
