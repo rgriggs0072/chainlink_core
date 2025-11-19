@@ -111,7 +111,7 @@ def render() -> None:
                     .properties(height=250)
                     .configure_title(align="center", fontSize=16)
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 st.warning("No chain summary data available.")
 

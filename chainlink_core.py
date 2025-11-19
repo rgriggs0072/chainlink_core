@@ -33,13 +33,27 @@ from utils.auth_utils import (
     reset_failed_attempts,
     is_admin_user,
 )
+from app_pages.predictive_purchases import render as predictive_purchases_page
+from app_pages import driver_forecast
+
 
 # Nav imports (render_navigation takes show_admin: bool)
 from nav.navigation_bar import (
     render_navigation,
     render_format_upload_submenu,
     render_reports_submenu,
+    render_ai_forecasts_submenu, 
+
 )
+
+def _safe_import(module_path: str):
+    """
+    Lazy-import a page module by dotted path (e.g., 'app_pages.gap_report').
+    Returns the module or raises ImportError for upstream handling.
+    """
+    import importlib
+    return importlib.import_module(module_path)
+
 
 # ---------------- Page Config & Global Styles ----------------
 st.set_page_config(
@@ -66,6 +80,38 @@ st.markdown(
         h1 { font-size: 1.75rem !important; }
         header[data-testid="stHeader"] { visibility: hidden; }
         #MainMenu, footer {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown(
+    """
+    <style>
+    /* Chainlink theme palette */
+    :root {
+        --primary-color: #6497D6;
+        --secondary-color: #B3D7ED;
+        --background-color: #F8F2EB;
+    }
+    h1, h2, h3 {
+        color: var(--primary-color) !important;
+    }
+    div[data-testid="stDataFrameContainer"] table {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .stDownloadButton button {
+        background-color: var(--primary-color);
+        color: white !important;
+        border: none;
+        border-radius: 6px;
+        font-weight: 500;
+    }
+    .stDownloadButton button:hover {
+        background-color: #4c7dc0 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -194,9 +240,13 @@ def _refresh_admin_flag():
     st.session_state["is_admin"] = bool(email and tenant and is_admin_user(email, tenant))
 
 # ---------------- Main ----------------
+# ---------------- Main ----------------
 def main():
+    """
+    Auth → tenant context → nav → router.
+    Admin-only: AI & Forecasts (with server-side guard).
+    """
     credentials = fetch_user_credentials()
-
     authenticator = stauth.Authenticate(
         credentials,
         "chainlink_token",
@@ -208,14 +258,13 @@ def main():
 
     # ---------- SUCCESSFUL LOGIN ----------
     if auth_status:
-        username_lc = username.strip().lower()
+        username_lc = (username or "").strip().lower()
         user_entry = credentials.get("usernames", {}).get(username_lc)
-
         if not user_entry or not user_entry.get("tenant_id"):
             st.error("Login error: user or tenant data missing")
             return
 
-        # Belt & suspenders: ensure the account is still active & not locked
+        # Hard checks: active + not locked
         if not is_user_active(username_lc, user_entry["tenant_id"]):
             st.error("Your account is disabled. Contact your administrator.")
             return
@@ -223,12 +272,12 @@ def main():
             st.error("Your account is locked. Please contact your administrator.")
             return
 
-        # Auth OK — establish session context
+        # Session context
         st.session_state["authenticated"] = True
         st.session_state["user_email"] = username_lc
         st.session_state["tenant_id"] = user_entry["tenant_id"]
 
-        # Load tenant configuration (TOML storage in Snowflake)
+        # Tenant config (TOML)
         tenant_config = load_tenant_config(user_entry["tenant_id"])
         if not isinstance(tenant_config, dict):
             st.error("Tenant configuration failed to load or is not a dict.")
@@ -237,103 +286,135 @@ def main():
         st.session_state["tenant_config"] = tenant_config
         st.session_state["toml_info"] = tenant_config  # legacy compatibility
 
-        # Validate TOML required fields
+        # Validate essentials
         required_keys = ["snowflake_user", "account", "private_key", "warehouse", "database", "schema"]
-        missing_keys = [k for k in required_keys if k not in tenant_config or not tenant_config[k]]
-        if missing_keys:
-            st.error(f"TOML configuration is incomplete. Missing: {', '.join(missing_keys)}")
+        missing = [k for k in required_keys if not tenant_config.get(k)]
+        if missing:
+            st.error(f"TOML configuration is incomplete. Missing: {', '.join(missing)}")
             st.code({k: v for k, v in tenant_config.items() if "key" not in k.lower()}, language="json")
             return
 
-        # Connect to tenant Snowflake + reset failed attempts
+        # Connect + reset failed attempts
         st.session_state["conn"] = connect_to_tenant_snowflake(tenant_config)
         reset_failed_attempts(username_lc)
 
-        # Compute admin flag and resolve display name
+        # Admin flag + display name
         _refresh_admin_flag()
-        display_name = _get_user_full_name_cached(username_lc, st.session_state["tenant_id"])
-        if not display_name or display_name.lower() == username_lc.lower():
-            display_name = name or username_lc  # fallback
+        display_name = _get_user_full_name_cached(username_lc, st.session_state["tenant_id"]) or name or username_lc
 
-        # Sidebar + nav
+        # Sidebar + top nav
         render_sidebar_header(display_name, tenant_config, authenticator)
-
-        selected_main = render_navigation(show_admin=bool(st.session_state.get("is_admin")))
+        is_admin = bool(st.session_state.get("is_admin"))
+        selected_main = render_navigation(show_admin=is_admin, show_ai=is_admin)  # <-- show AI only for admins
         if not selected_main:
             st.error("Navigation menu failed to render or returned no selection.")
             return
 
-        # ---------- Routing ----------
+        # ---------- Routing Menus ----------
         if selected_main == "Home":
-            import app_pages.home as page
-            page.render()
+            _safe_import("app_pages.home").render()
+            return
 
-        elif selected_main == "Reports":
+        if selected_main == "Reports":
             report_page = render_reports_submenu()
-            if report_page == "Gap Report":
-                import app_pages.gap_report as page
-            elif report_page == "Data Exports":
-                import app_pages.data_exports as page
-            elif report_page == "AI-Narrative Report":
-                import app_pages.ai_narrative_report as page
-            elif report_page == "Placement Intelligence":
-                import app_pages.ai_placement_intelligence as page
-            elif report_page == "Email Gap Report":
-                import app_pages.email_gap_report as page
-            else:
+            route = {
+                "Gap Report": "app_pages.gap_report",
+                "Email Gap Report": "app_pages.email_gap_report",
+                "Data Exports": "app_pages.data_exports",
+                
+            }.get(report_page)
+            if not route:
                 st.warning("Invalid report selection.")
                 return
-            page.render()
+            _safe_import(route).render()
+            return
 
-        elif selected_main == "Format and Upload":
+        if selected_main == "Format and Upload":
             selected_sub = render_format_upload_submenu()
-            if selected_sub == "Load Company Data":
-                import app_pages.load_company_data as page
-            elif selected_sub == "Reset Schedule Processing":
-                import app_pages.reset_schedule as page
-            elif selected_sub == "Distribution Grid Processing":
-                import app_pages.distro_grid as page
-            else:
+            route = {
+                "Load Company Data": "app_pages.load_company_data",
+                "Reset Schedule Processing": "app_pages.reset_schedule",
+                "Distribution Grid Processing": "app_pages.distro_grid",
+            }.get(selected_sub)
+            if not route:
                 st.warning("Invalid format/upload selection.")
                 return
-            page.render()
+            _safe_import(route).render()
+            return
 
-        elif selected_main == "Admin":
-            # Server-side guard: if somehow selected without rights, bounce
-            if not st.session_state.get("is_admin", False):
+        # --- AI & Forecasts Router (server-side guard + robust mapping) ---
+        if selected_main == "AI & Forecasts":
+            # Guard: never render if not admin
+            if not is_admin:
+                st.warning("You don’t have access to AI & Forecasts.")
+                st.rerun()
+
+            # The submenu must return one of these labels EXACTLY.
+            selected_ai = render_ai_forecasts_submenu()
+
+            # Map submenu label -> module path (uniform, no callables here)
+            ai_pages = {
+                "Predictive Purchases": "app_pages.predictive_purchases",
+                "Predictive Truck Plan": "app_pages.predictive_truck_plan",
+                "AI-Narrative Report": "app_pages.ai_narrative_report",
+                "Placement Intelligence": "app_pages.ai_placement_intelligence",
+               
+            }
+
+            # Debug helper: uncomment if you want to see what the submenu returns
+            # st.caption(f"Debug: selected_ai = {selected_ai!r}")
+
+            module_path = ai_pages.get(selected_ai)
+            if not module_path:
+                # Show a precise error to catch label drift or typos in the submenu
+                st.error(f"Unknown selection from AI & Forecasts menu: {selected_ai!r}")
+                st.info(f"Valid options: {', '.join(ai_pages.keys())}")
+            else:
+                _safe_import(module_path).render()
+            st.stop()
+
+
+            
+
+        if selected_main == "Admin":
+            if not is_admin:
                 st.warning("You don’t have access to Admin.")
                 st.rerun()
-            import app_pages.admin as page
-            page.render()
+            _safe_import("app_pages.admin").render()
+            return
+
+        st.warning("Unknown menu selection.")
 
     # ---------- FAILED LOGIN ----------
     elif auth_status is False:
         email_lc = (username or "").strip().lower()
         if not email_lc:
             st.error("Username or password incorrect")
-        else:
-            # Probe status for clearer UX & to avoid incrementing on disabled/locked
-            is_active, is_locked, exists = _probe_user_status(email_lc)
+            return
 
-            if exists and is_active is False:
-                st.error("Your account is disabled. Contact your administrator.")
-            elif exists and is_locked:
-                st.error("Your account is locked. Please contact your administrator.")
-            else:
-                # Only increment for genuine bad attempts on non-disabled/non-locked (or unknown) accounts
-                increment_failed_attempts(email_lc)
-                if is_user_locked_out(email_lc):
-                    st.error("Account locked due to too many failed login attempts.")
-                else:
-                    st.error("Username or password incorrect")
+        is_active, is_locked, exists = _probe_user_status(email_lc)
+        if exists and is_active is False:
+            st.error("Your account is disabled. Contact your administrator.")
+            return
+        if exists and is_locked:
+            st.error("Your account is locked. Please contact your administrator.")
+            return
+
+        increment_failed_attempts(email_lc)
+        if is_user_locked_out(email_lc):
+            st.error("Account locked due to too many failed login attempts.")
+        else:
+            st.error("Username or password incorrect")
 
     # ---------- NOT YET LOGGED IN ----------
-    elif auth_status is None:
+    else:
         st.warning("Please enter your username and password")
         with st.expander("Forgot your password?"):
             if st.button("Reset Password Link"):
                 st.session_state["forgot_password_submitted"] = True
                 st.rerun()
+
+
 
 if __name__ == "__main__":
     main()

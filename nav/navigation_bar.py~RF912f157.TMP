@@ -42,7 +42,7 @@ def render_navigation(*, show_admin: bool, show_ai: bool = False) -> str:
 def render_reports_submenu() -> str:
     return option_menu(
         menu_title="",
-        options=["Gap Report", "Email Gap Report", "Data Exports"],
+        options=["Gap Report", "Email Gap Report", "Data Exports", "AI-Narrative Report", "Placement Intelligence"],
         icons=["file-bar-graph", "envelope", "file-earmark-text", "file-text", "search"],
         menu_icon="bar-chart",
         default_index=0,
@@ -69,7 +69,7 @@ def render_ai_forecasts_submenu() -> str:
     """
     return option_menu(
         menu_title="",
-        options=["Predictive Purchases", "Predictive Truck Plan", "AI-Narrative Report", "Placement Intelligence"],
+        options=["Predictive Purchases"],
         icons=["graph-up-arrow"],
         menu_icon="stars",
         default_index=0,
