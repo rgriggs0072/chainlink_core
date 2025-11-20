@@ -862,69 +862,114 @@ def update_spinner(message):
 # Procedure will update the table SALESPERSON_EXECUTION_SUMMARY_TBL with todays data
 # ============================================================================================================================================================
 
-# Function to check and process data
-def check_and_process_data():
-    # Retrieve toml_info from session state
-    toml_info = st.session_state.get('toml_info')
-    if not toml_info:
-        st.error("TOML information is not available. Please check the tenant ID and try again.")
+import streamlit as st
+
+def check_and_process_data(conn=None) -> None:
+    """
+    Check and (optionally) refresh the salesperson gap history snapshot.
+
+    Behavior:
+    - Uses SALESPERSON_EXECUTION_SUMMARY as the source.
+    - Writes a daily snapshot into SALESPERSON_EXECUTION_SUMMARY_TBL via BUILD_GAP_TRACKING().
+    - If today's LOG_DATE already exists in the table, prompts the user
+      to overwrite or keep the existing snapshot.
+
+    Args:
+        conn: Optional Snowflake connection. If None, falls back to
+              st.session_state["conn"] (the per-tenant connection used
+              by the Chainlink Core app).
+    """
+    # ---------------------------
+    # Resolve connection
+    # ---------------------------
+    if conn is None:
+        conn = st.session_state.get("conn")
+
+    if conn is None:
+        st.error("No active Snowflake connection found. Please log in again.")
         return
- 
-        # Create a connection to Snowflake
-        conn_toml = snowflake_connection.get_snowflake_toml(toml_info)
 
-        # Create a cursor object
-        cursor = conn_toml.cursor()
+    # ---------------------------
+    # Check if today's snapshot exists
+    # ---------------------------
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM SALESPERSON_EXECUTION_SUMMARY_TBL
+                WHERE LOG_DATE = CURRENT_DATE()
+                """
+            )
+            (count_today,) = cur.fetchone()
+    except Exception as e:
+        st.error("Failed to check existing gap history snapshot.")
+        st.exception(e)
+        return
 
+    # ---------------------------
+    # If data exists for today: prompt to overwrite
+    # ---------------------------
+    if count_today > 0:
+        st.warning(
+            "Gap history for today already exists in "
+            "SALESPERSON_EXECUTION_SUMMARY_TBL.\n\n"
+            "Do you want to overwrite today's snapshot?"
+        )
+
+        col_yes, col_no = st.columns(2)
+
+        overwrite = col_yes.button(
+            "Yes, overwrite today's snapshot",
+            key="gap_overwrite_yes",
+        )
+        keep = col_no.button(
+            "No, keep existing snapshot",
+            key="gap_overwrite_no",
+        )
+
+        if overwrite:
+            try:
+                with conn.cursor() as cur:
+                    # Remove today's rows
+                    cur.execute(
+                        """
+                        DELETE FROM SALESPERSON_EXECUTION_SUMMARY_TBL
+                        WHERE LOG_DATE = CURRENT_DATE()
+                        """
+                    )
+                    # Rebuild snapshot from current SALESPERSON_EXECUTION_SUMMARY
+                    cur.execute("CALL BUILD_GAP_TRACKING()")
+
+                st.success(
+                    "Today's gap history snapshot was overwritten via BUILD_GAP_TRACKING()."
+                )
+                st.rerun()
+
+            except Exception as e:
+                st.error("Failed to overwrite today's gap history snapshot.")
+                st.exception(e)
+
+        elif keep:
+            st.info("Existing snapshot kept. No changes were made.")
+
+    # ---------------------------
+    # If no snapshot for today: create it
+    # ---------------------------
+    else:
         try:
-            # Check if data already processed for today
-            check_query = f"SELECT COUNT(*) FROM SALESPERSON_EXECUTION_SUMMARY_TBL WHERE LOG_DATE = CURRENT_DATE()"
-            cursor.execute(check_query)
-            result = cursor.fetchone()
+            with conn.cursor() as cur:
+                cur.execute("CALL BUILD_GAP_TRACKING()")
 
-            if result[0] > 0:
-                # Data already processed for today, ask if they want to overwrite
-                st.warning("Data for today already processed. Do you want to overwrite it?")
-
-                # Add "Yes" and "No" buttons
-                yes_button = st.button("Yes, overwrite")
-                no_button = st.button("No, keep existing data")
-
-                if yes_button:
-                    # If yes, remove data for today
-                    delete_query = f"DELETE FROM SALESPERSON_EXECUTION_SUMMARY_TBL WHERE LOG_DATE = CURRENT_DATE()"
-                    cursor.execute(delete_query)
-
-                    # Call the stored procedure to update the table with new data
-                    build_gap_tracking_query = "CALL BUILD_GAP_TRACKING()"
-                    cursor.execute(build_gap_tracking_query)
-
-                    st.success("Data overwritten and BUILD_GAP_TRACKING() executed successfully.")
-
-                elif no_button:
-                    # If no, do nothing
-                    st.info("Data not overwritten.")
-
-            else:
-                # No data for today, proceed with the stored procedure
-                build_gap_tracking_query = "CALL BUILD_GAP_TRACKING()"
-                cursor.execute(build_gap_tracking_query)
-
-                st.success("BUILD_GAP_TRACKING() executed successfully.")
+            st.success(
+                "Gap history snapshot created for today via BUILD_GAP_TRACKING()."
+            )
+            st.rerun()
 
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+            st.error("Failed to create today's gap history snapshot.")
+            st.exception(e)
 
-        finally:
-            # Close the cursor and connection
-            cursor.close()
-            conn.close()
-
-
-# ============================================================================================================================================================
-# END Function to check if todays privot table data has processed.  If so will give user option to overwrite the data and if not the procedure BUILD_GAP_TRACKING()
-# Procedure will update the table SALESPERSON_EXECUTION_SUMMARY_TBL with todays data
-# ============================================================================================================================================================
 
 
 
