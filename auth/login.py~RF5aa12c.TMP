@@ -1,4 +1,3 @@
-# ---------------------------- Login.py ----------------------------
 import streamlit as st
 from sf_connector.service_connector import get_service_account_connection
 

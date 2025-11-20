@@ -17,6 +17,7 @@ import streamlit as st
 from PIL import Image
 import streamlit_authenticator as stauth
 import extra_streamlit_components as stx
+from streamlit.components.v1 import html
 
 from utils.logout_utils import handle_logout
 from utils.ui_helpers import add_logo
@@ -56,12 +57,27 @@ def _safe_import(module_path: str):
 
 
 # ---------------- Page Config & Global Styles ----------------
+import streamlit as st
+from streamlit.components.v1 import html
+
 st.set_page_config(
     page_title="Chainlink Analytics",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+def hide_sidebar():
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] {display: none !important;}
+        div[data-testid="stToolbar"] {display: none !important;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 st.markdown(
     """
@@ -78,7 +94,7 @@ st.markdown(
             padding-right: 5rem;
         }
         h1 { font-size: 1.75rem !important; }
-        header[data-testid="stHeader"] { visibility: hidden; }
+        /* DO NOT HIDE HEADER HERE */
         #MainMenu, footer {visibility: hidden;}
     </style>
     """,
@@ -116,6 +132,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
 
 # ---------------- Session State Init ----------------
 for key in ["authenticated", "tenant_id", "user_email", "conn", "is_admin"]:
@@ -246,6 +264,7 @@ def main():
     Auth → tenant context → nav → router.
     Admin-only: AI & Forecasts (with server-side guard).
     """
+    
     credentials = fetch_user_credentials()
     authenticator = stauth.Authenticate(
         credentials,
@@ -255,6 +274,7 @@ def main():
     )
 
     name, auth_status, username = authenticator.login("Login", "main")
+    
 
     # ---------- SUCCESSFUL LOGIN ----------
     if auth_status:
@@ -408,6 +428,7 @@ def main():
 
     # ---------- NOT YET LOGGED IN ----------
     else:
+        hide_sidebar()
         st.warning("Please enter your username and password")
         with st.expander("Forgot your password?"):
             if st.button("Reset Password Link"):

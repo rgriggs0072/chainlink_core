@@ -64,7 +64,7 @@ def render_supplier_scatter(df_supplier: pd.DataFrame) -> None:
         .interactive()
     )
 
-    st.altair_chart(scatter_chart, width="content")
+    st.altair_chart(scatter_chart, width="stretch")
 
 
 def render_execution_summary_card(

@@ -1,4 +1,4 @@
-# ------------- home.py ----------------
+﻿# ------------- home.py ----------------
 """
 Home Page (Chainlink Core)
 
@@ -19,7 +19,6 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from io import BytesIO
-from datetime import datetime
 
 # UI helpers
 from utils.ui_helpers import render_supplier_filter
@@ -70,13 +69,15 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
-        # ---------------- Button styling (Download + Process) ----------------
+    # ----------------------------------------------------------------------
+    # Scoped CSS for *only* the Process Gap Pivot Data button
+    # ----------------------------------------------------------------------
+    # We wrap that button in a div with id="gap-process-btn" and target it here.
     st.markdown(
         """
         <style>
-        /* Make Streamlit buttons match Chainlink primary styling */
-        div[data-testid="stButton"] > button {
-            background-color: #6497D6 !important;  /* primary */
+        #gap-process-btn div[data-testid="stButton"] > button {
+            background-color: #6497D6 !important;  /* Chainlink primary */
             color: white !important;
             border-radius: 0.5rem !important;
             border: none !important;
@@ -84,14 +85,13 @@ def render() -> None:
             font-size: 0.85rem !important;
             font-weight: 600 !important;
         }
-        div[data-testid="stButton"] > button:hover {
+        #gap-process-btn div[data-testid="stButton"] > button:hover {
             filter: brightness(0.92);
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
 
     # ======================================================================
     # 1) Execution Summary + Chain Bar Chart
@@ -238,7 +238,7 @@ def render() -> None:
         gap_df = pd.read_sql_query(gap_query, conn)
 
         if not gap_df.empty:
-            # Rename for readability in the UI
+            # Prepare data for pivot: rename for readability in the UI layer
             gap_df = gap_df.rename(
                 columns={
                     "SALESPERSON": "Salesperson",
@@ -272,7 +272,7 @@ def render() -> None:
                 gap_df_pivot_limited.columns
             ).strftime("%y/%m/%d")
 
-            # ---------- UI DISPLAY: show 0 instead of NaN ----------
+            # UI DISPLAY: show 0 instead of NaN for gaps
             gap_display = gap_df_pivot_limited.fillna(0)
 
             # Try to render as ints where possible (looks cleaner than floats)
@@ -300,8 +300,7 @@ def render() -> None:
                 font-size: 0.85rem;
             """
 
-            # Render table + Download button + Process button in the same column,
-            # in the order: table -> download -> "Process Gap Pivot Data"
+            # Table container
             row2_col2.markdown(
                 f"<div style='{container_css}'>{table_html}</div>",
                 unsafe_allow_html=True,
@@ -318,9 +317,14 @@ def render() -> None:
                 file_name="gap_history_report.xlsx",
             )
 
-            # Button BELOW the table and BELOW the download button
-            if row2_col2.button("Process Gap Pivot Data", key="process_gap_pivot"):
-                # This will handle "already processed today" logic + CALL BUILD_GAP_TRACKING()
+            # Process Gap Pivot Data button
+            # Wrapped in gap-process-btn so ONLY this button gets the blue style
+            row2_col2.markdown("<div id='gap-process-btn'>", unsafe_allow_html=True)
+            process_clicked = row2_col2.button("Process Gap Pivot Data", key="process_gap_pivot")
+           # row2_col2.markdown("</div>", unsafe_allow_html=True)
+
+            if process_clicked:
+                # Handles "already processed today" logic + CALL BUILD_GAP_TRACKING()
                 check_and_process_data(conn)
 
         else:
