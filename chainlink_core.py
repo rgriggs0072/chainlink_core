@@ -82,11 +82,6 @@ def hide_sidebar():
 st.markdown(
     """
     <style>
-       section[data-testid="stSidebar"] {
-            width: 250px !important;
-            max-width: 250px !important;
-            min-width: 250px !important;
-        }
         .block-container {
             padding-top: 0rem;
             padding-bottom: 0rem;
@@ -94,7 +89,6 @@ st.markdown(
             padding-right: 5rem;
         }
         h1 { font-size: 1.75rem !important; }
-        /* DO NOT HIDE HEADER HERE */
         #MainMenu, footer {visibility: hidden;}
     </style>
     """,
