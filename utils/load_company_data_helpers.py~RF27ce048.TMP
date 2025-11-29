@@ -23,12 +23,12 @@ Notes:
 
 from datetime import datetime
 from io import BytesIO
-import re
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import numbers
-from openpyxl import Workbook
+
 from sf_connector.service_connector import connect_to_tenant_snowflake
 from utils.class_validation_helpers import (
     ColumnRule,
@@ -620,21 +620,10 @@ def _build_missing_store_number_error(df: pd.DataFrame, missing_values: set[int]
 
 def validate_sales_against_customers(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     """
-    Cross-validate STORE_NUMBER + STORE_NAME pairs in the Sales upload
-    against existing CUSTOMERS for this tenant.
-
-    Rules:
-      - HARD ERROR if:
-          * STORE_NUMBER does NOT exist in CUSTOMERS for this tenant, OR
-          * STORE_NUMBER exists but STORE_NAME does NOT match ANY existing
-            STORE_NAME for that STORE_NUMBER (after normalization).
-      - OK if:
-          * (STORE_NUMBER, STORE_NAME) matches at least one CUSTOMERS row
-            (supports multiple chains sharing the same store_number).
-
-    Returns:
-        (errors, warnings)
+    Cross-validate STORE_NUMBER values in the Sales upload against existing CUSTOMERS.
+    Returns (errors, warnings) where each error is a separate list entry.
     """
+
     conn, cursor, tenant_id = _get_conn_and_cursor()
     if not conn or not tenant_id:
         return [], []
@@ -651,111 +640,47 @@ def validate_sales_against_customers(df: pd.DataFrame) -> tuple[list[str], list[
         )
         rows = cursor.fetchall()
     except Exception:
-        # Don't block upload if the cross-check fails
         return [], []
     finally:
-        try:
-            cursor.close()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: cursor.close()
+        except: pass
+        try: conn.close()
+        except: pass
 
-    if not rows:
-        # No customer data yet for this tenant; skip this check
-        return [], []
+    # Map for valid stores
+    valid_store_numbers = {int(r[0]) for r in rows if r[0] is not None}
 
-    def _norm_name(name: str) -> str:
-        if name is None:
-            return ""
-        s = str(name).upper().strip()
-        # Strip trailing "#xxxx" patterns used in some exports
-        if "#" in s:
-            s = s.split("#")[0].strip()
-        return s
+    # Map to help error messages
+    df["_excel_row"] = df.index + 2  # Excel rows start at 2
+    df["_store_num_int"] = pd.to_numeric(df["STORE_NUMBER"], errors="coerce")
 
-    # For each STORE_NUMBER, keep *all* normalized + raw names
-    store_to_names_norm: dict[int, set[str]] = {}
-    store_to_names_raw: dict[int, set[str]] = {}
+    errors = []
+    warnings = []
 
-    for sn, sname in rows:
-        if sn is None:
-            continue
-        try:
-            sn_int = int(sn)
-        except Exception:
-            continue
-
-        norm = _norm_name(sname)
-        raw = str(sname) if sname is not None else ""
-
-        store_to_names_norm.setdefault(sn_int, set()).add(norm)
-        store_to_names_raw.setdefault(sn_int, set()).add(raw)
-
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    if "STORE_NUMBER" not in df.columns or "STORE_NAME" not in df.columns:
+    # 1) Detect STORE_NUMBER rows that cannot be parsed to an integer
+    unparseable = df[df["_store_num_int"].isna()]
+    for _, row in unparseable.iterrows():
+        excel_row = row["_excel_row"]
+        raw_value = row["STORE_NUMBER"]
         errors.append(
-            "STORE_NUMBER and/or STORE_NAME columns are missing; "
-            "cannot cross-check against CUSTOMERS."
+            f"Row {excel_row}: STORE_NUMBER='{raw_value}' is not a valid integer."
         )
-        return errors, warnings
 
-    problem_rows: list[str] = []
-
-    # Walk each uploaded row and compare against CUSTOMER lookup
-    for idx, row in df.reset_index(drop=True).iterrows():
-        raw_sn = row.get("STORE_NUMBER")
-        raw_name = row.get("STORE_NAME")
-        excel_row = idx + 2  # header is Excel row 1
-
-        if pd.isna(raw_sn):
-            continue
-
-        try:
-            sn_int = int(raw_sn)
-        except Exception:
-            # If it's totally non-numeric, schema validation should catch it
-            continue
-
-        upload_name_norm = _norm_name(raw_name)
-
-        # 1) STORE_NUMBER not in CUSTOMERS at all -> HARD ERROR
-        if sn_int not in store_to_names_norm:
-            problem_rows.append(
-                f"Row {excel_row}: STORE_NUMBER={sn_int}, STORE_NAME='{raw_name}' "
-                f"does not exist in CUSTOMERS for this tenant."
-            )
-            continue
-
-        # 2) STORE_NUMBER exists, but STORE_NAME must match at least one entry
-        known_norms = store_to_names_norm.get(sn_int, set())
-        known_raws = sorted(store_to_names_raw.get(sn_int, set()))
-
-        if upload_name_norm not in known_norms:
-            expected_list = ", ".join(f"'{n}'" for n in known_raws if n)
-            problem_rows.append(
-                f"Row {excel_row}: STORE_NUMBER={sn_int}, STORE_NAME='{raw_name}' "
-                f"does not match any existing Customers records for this store. "
-                f"Expected one of: {expected_list}."
+    # 2) Detect STORE_NUMBER values not found in CUSTOMERS
+    checkable = df[df["_store_num_int"].notna()]
+    for _, row in checkable.iterrows():
+        sn = int(row["_store_num_int"])
+        if sn not in valid_store_numbers:
+            excel_row = row["_excel_row"]
+            store_name = row.get("STORE_NAME", "")
+            errors.append(
+                f"Row {excel_row}: STORE_NUMBER={sn}, STORE_NAME='{store_name}' does not exist in CUSTOMERS."
             )
 
-    if problem_rows:
-        lines = [
-            "Some STORE_NUMBER / STORE_NAME combinations in your upload do not match the CUSTOMERS table for this tenant.",
-            "This is a hard validation error; please correct your file before re-uploading.",
-            "Problem rows (Excel row numbers):",
-        ]
-        lines.extend(f"• {msg}" for msg in problem_rows)
-        errors.append("\n".join(lines))
+    # Cleanup
+    df.drop(columns=["_excel_row", "_store_num_int"], inplace=True, errors="ignore")
 
     return errors, warnings
-
-
-
 
 
 
@@ -767,93 +692,6 @@ def validate_sales_against_customers(df: pd.DataFrame) -> tuple[list[str], list[
 # =============================================================================
 # 📊 SUPPLIER BY COUNTY FORMATTER
 # =============================================================================
-
-# =============================================================================
-# 📌 SUPPLIER BY COUNTY – REQUIRED COLUMNS (Upload Template)
-# =============================================================================
-
-SUPPLIER_COUNTY_REQUIRED_COLUMNS = [
-    "SUPPLIER",
-    "COUNTY",
-    "STATUS",
-]
-
-def generate_supplier_county_template() -> pd.DataFrame:
-    """
-    Generates an empty Supplier by County template.
-    Tenant fields are added during upload and not included here.
-    """
-    return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
-
-
-def validate_supplier_county_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Validate uploaded Supplier by County template.
-
-    Requirements:
-    - SUPPLIER: required, non-empty
-    - COUNTY: required, non-empty
-    - STATUS: required ("Yes" or "No"; case-insensitive)
-    """
-    errors = []
-
-    df = df_raw.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    # Check columns
-    missing = [c for c in SUPPLIER_COUNTY_REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        errors.append(
-            "Missing required columns: " + ", ".join(missing)
-        )
-        return df, errors
-
-    # Restrict to required columns only
-    df = df[SUPPLIER_COUNTY_REQUIRED_COLUMNS].copy()
-
-    # Drop empty rows
-    df = df.dropna(how="all", subset=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
-
-    # Clean values
-    for col in SUPPLIER_COUNTY_REQUIRED_COLUMNS:
-        df[col] = (
-            df[col]
-            .astype(str)
-            .str.strip()
-            .replace({"nan": "", "NaN": "", "NONE": "", "None": ""})
-        )
-
-    # Validate SUPPLIER
-    missing_supplier = df["SUPPLIER"] == ""
-    if missing_supplier.any():
-        rows = [i + 2 for i in df.index[missing_supplier]]
-        errors.append(
-            "SUPPLIER is required for row(s): " + ", ".join(map(str, rows))
-        )
-
-    # Validate COUNTY
-    missing_county = df["COUNTY"] == ""
-    if missing_county.any():
-        rows = [i + 2 for i in df.index[missing_county]]
-        errors.append(
-            "COUNTY is required for row(s): " + ", ".join(map(str, rows))
-        )
-
-    # Validate STATUS
-    allowed = {"YES", "NO"}
-    bad_status_mask = ~df["STATUS"].str.upper().isin(allowed)
-
-    if bad_status_mask.any():
-        rows = [i + 2 for i in df.index[bad_status_mask]]
-        bad_vals = df.loc[bad_status_mask, "STATUS"].unique().tolist()
-        errors.append(
-            f"Invalid STATUS values {bad_vals}. Only 'Yes' or 'No' allowed. Rows: "
-            + ", ".join(map(str, rows))
-        )
-
-    return df, errors
-
-
 
 
 def format_supplier_by_county(file_content) -> pd.DataFrame:
@@ -902,54 +740,6 @@ def format_supplier_by_county(file_content) -> pd.DataFrame:
     except Exception as e:
         st.error(f"❌ Failed to format Supplier by County report: {str(e)}")
         return None
-
-
-
-
-# ------------------------------------------------------------------------------------------------------------------------
-# New Products tmplate + validation layer (legacy openpyxl formatter kept for rollback)
-# Randy Griggs 11/23/2025
-# ------------------------------------------------------------------------------------------------------------------------
-
-# =============================================================================
-# 📄 PRODUCTS TEMPLATE (for download)
-# =============================================================================
-
-def create_products_template_workbook():
-    """
-    Build an in-memory Excel workbook for the Products template.
-
-    Columns:
-      - PRODUCT_ID       (optional numeric)
-      - SUPPLIER        (required)
-      - PRODUCT_NAME    (required)
-      - PACKAGE         (required)
-      - CARRIER_UPC     (required, digits only, <= 20 chars)
-      - PRODUCT_MANAGER (optional)
-    """
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Products"
-
-    headers = [
-        "PRODUCT_ID",
-        "SUPPLIER",
-        "PRODUCT_NAME",
-        "PACKAGE",
-        "CARRIER_UPC",
-        "PRODUCT_MANAGER",
-    ]
-    ws.append(headers)
-
-    return wb
-
-
-
-
-
-
-
-
 
 
 # =============================================================================
@@ -1311,252 +1101,6 @@ def write_customers_to_snowflake(df: pd.DataFrame):
         st.error(f"❌ Customer upload failed: {str(e)}")
 
 
-
-# ------------------------------------------------------------------------------------------------------------------------------------
-# New Products upload function (legacy openpyxl version kept for rollback)
-# Randy Griggs 11/23/2025
-#------------------------------------------------------------------------------------------------------------------------------------
-
-
-
-# =============================================================================
-# ✅ PRODUCTS UPLOAD VALIDATION (DataFrame-level)
-# =============================================================================
-
-REQUIRED_PRODUCT_COLUMNS = [
-    "PRODUCT_ID",
-    "SUPPLIER",
-    "PRODUCT_NAME",
-    "PACKAGE",
-    "CARRIER_UPC",
-    "PRODUCT_MANAGER",
-]
-
-
-# =============================================================================
-# 📄 PRODUCTS TEMPLATE (for download)
-# =============================================================================
-
-def generate_products_template() -> pd.DataFrame:
-    """
-    Build an in-memory Products template as a DataFrame.
-
-    Columns:
-      - PRODUCT_ID       (optional numeric)
-      - SUPPLIER         (required)
-      - PRODUCT_NAME     (required)
-      - PACKAGE          (required)
-      - CARRIER_UPC      (required, digits only, <= 20 chars)
-      - PRODUCT_MANAGER  (optional)
-    """
-    cols = [
-        "PRODUCT_ID",
-        "SUPPLIER",
-        "PRODUCT_NAME",
-        "PACKAGE",
-        "CARRIER_UPC",
-        "PRODUCT_MANAGER",
-    ]
-    template_df = pd.DataFrame(columns=cols)
-    return template_df
-
-
-
-
-
-# =============================================================================
-# ✅ PRODUCTS UPLOAD VALIDATION (DataFrame-level)
-# =============================================================================
-
-REQUIRED_PRODUCT_COLUMNS = [
-    "PRODUCT_ID",
-    "SUPPLIER",
-    "PRODUCT_NAME",
-    "PACKAGE",
-    "CARRIER_UPC",
-    "PRODUCT_MANAGER",
-]
-
-
-def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Validate and clean the uploaded Products DataFrame.
-
-    Rules:
-    - Required columns:
-        PRODUCT_ID, SUPPLIER, PRODUCT_NAME, PACKAGE, CARRIER_UPC, PRODUCT_MANAGER
-    - PRODUCT_ID:
-        * REQUIRED (no blank / NaN / 'nan' / whitespace)
-        * Must be numeric (digits only)
-        * Must be UNIQUE across the uploaded file
-    - CARRIER_UPC:
-        * Treated as string
-        * Strip '.0', spaces, hyphens
-        * REQUIRED (no blank)
-        * Digits-only
-        * Max length 20
-        * Reject legacy placeholder '999999999999'
-    """
-    errors: list[str] = []
-
-    # 1) Normalize column names immediately
-    df = df_raw.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    # 2) Hard required-column check BEFORE anything else
-    missing = [c for c in REQUIRED_PRODUCT_COLUMNS if c not in df.columns]
-    if missing:
-        errors.append(
-            "Missing required columns in Products file: "
-            + ", ".join(missing)
-            + ". Please fix the formatted file/template and re-upload."
-        )
-        return df, errors
-
-    # 3) Restrict to the columns we care about
-    df = df[REQUIRED_PRODUCT_COLUMNS].copy()
-
-    # 4) Drop completely-empty rows across required columns
-    df = df.dropna(how="all", subset=REQUIRED_PRODUCT_COLUMNS)
-
-    # 5) Clean string columns (except PRODUCT_ID – handled separately)
-    str_cols = ["SUPPLIER", "PRODUCT_NAME", "PACKAGE", "CARRIER_UPC", "PRODUCT_MANAGER"]
-    for col in str_cols:
-        df[col] = (
-            df[col]
-            .astype(str)
-            .str.strip()
-            .replace({
-                "nan": "",
-                "NaN": "",
-                "NONE": "",
-                "None": "",
-            })
-        )
-
-    # ------------------------------------------------------------------
-    # 6) PRODUCT_ID — REQUIRED, NUMERIC, UNIQUE
-    # ------------------------------------------------------------------
-    pid_col = df["PRODUCT_ID"]
-
-    # a) detect missing BEFORE any numeric conversion
-    missing_id_mask = pid_col.isna() | pid_col.astype(str).str.strip().isin(
-        ["", "nan", "NaN", "NONE", "None"]
-    )
-    if missing_id_mask.any():
-        idxs = df.index[missing_id_mask].tolist()
-        human_rows = [i + 2 for i in idxs]  # Excel-style row numbers
-        errors.append(
-            "PRODUCT_ID is required and cannot be blank for row(s): "
-            + ", ".join(map(str, human_rows))
-            + "."
-        )
-
-    # b) enforce numeric: digits only at the string level
-    pid_str = pid_col.astype(str).str.strip()
-    bad_digit_mask = ~pid_str.str.match(r"^\d+$")
-    bad_digit_mask = bad_digit_mask & ~missing_id_mask
-    if bad_digit_mask.any():
-        idxs = df.index[bad_digit_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "PRODUCT_ID must be numeric (digits only) for row(s): "
-            + ", ".join(map(str, human_rows))
-            + "."
-        )
-
-    # c) uniqueness among valid (non-missing, numeric) IDs
-    valid_mask = ~(missing_id_mask | bad_digit_mask)
-    valid_pid_str = pid_str.where(valid_mask)
-    dup_mask = valid_pid_str.duplicated(keep=False) & valid_mask
-    if dup_mask.any():
-        dup_ids = sorted(valid_pid_str[dup_mask].unique().tolist())
-        errors.append(
-            "Duplicate PRODUCT_ID values found in upload: "
-            + ", ".join(dup_ids)
-            + ". PRODUCT_ID must be unique per product in the file."
-        )
-
-    # d) finally: convert PRODUCT_ID to numeric for insert
-    df["PRODUCT_ID"] = pd.to_numeric(valid_pid_str, errors="coerce")
-
-    # ------------------------------------------------------------------
-    # 7) Clean / validate CARRIER_UPC
-    # ------------------------------------------------------------------
-    def _clean_upc(val: str) -> str:
-        if val is None:
-            return ""
-        s = str(val).strip()
-        if s.endswith(".0"):
-            s = s[:-2]
-        s = s.replace("-", "").replace(" ", "")
-        return s
-
-    df["CARRIER_UPC"] = df["CARRIER_UPC"].apply(_clean_upc)
-
-    # legacy placeholder from old formatter
-    placeholder_mask_exact = df["CARRIER_UPC"] == "999999999999"
-
-    # extended: treat any UPC that starts with a long run of 9s as placeholder-ish
-    # e.g., 99999999999999901696, 99999999999999900000
-    placeholder_mask_pattern = df["CARRIER_UPC"].str.match(r"^9{6,}")
-
-    placeholder_mask = placeholder_mask_exact | placeholder_mask_pattern
-
-    if placeholder_mask.any():
-        idxs = df.index[placeholder_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC appears to be a placeholder value (leading 9s) for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". Please replace with real UPCs before upload."
-        )
-    if placeholder_mask.any():
-        idxs = df.index[placeholder_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC has placeholder value '999999999999' for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". Please replace with real UPCs before upload."
-        )
-
-    # blank UPC
-    blank_upc_mask = df["CARRIER_UPC"] == ""
-    if blank_upc_mask.any():
-        idxs = df.index[blank_upc_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC is blank for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". All products must have a UPC."
-        )
-
-    # non-digit UPC
-    bad_upc_mask = df["CARRIER_UPC"].ne("") & ~df["CARRIER_UPC"].str.isdigit()
-    if bad_upc_mask.any():
-        idxs = df.index[bad_upc_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC contains non-digit characters for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". UPC must contain digits only (no spaces, letters, or symbols)."
-        )
-
-    # length > 20
-    long_upc_mask = df["CARRIER_UPC"].str.len() > 20
-    if long_upc_mask.any():
-        idxs = df.index[long_upc_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC exceeds 20 characters for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". Please correct before upload."
-        )
-
-    return df, errors
-
-
-
 # =============================================================================
 # 📥 PRODUCTS UPLOAD
 # =============================================================================
@@ -1632,10 +1176,6 @@ def write_supplier_by_county_to_snowflake(df: pd.DataFrame):
     - Tenant-aware connection
     - TRUNCATE + INSERT in a transaction
     - Adds audit fields: TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
-
-    Expects columns:
-        SUPPLIER, COUNTY, STATUS
-    (Case-insensitive; we normalize to upper internally.)
     """
     toml_info = st.session_state.get("toml_info")
     tenant_id = st.session_state.get("tenant_id")
@@ -1643,24 +1183,6 @@ def write_supplier_by_county_to_snowflake(df: pd.DataFrame):
     if not toml_info or not tenant_id:
         st.error("❌ Tenant configuration is missing.")
         return
-
-    # Normalize column names so BOTH legacy and validator flows work:
-    # - validator produces SUPPLIER/COUNTY/STATUS
-    # - legacy formatter produces Supplier/County/Status
-    df = df.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    required_cols = ["SUPPLIER", "COUNTY", "STATUS"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        st.error(
-            "❌ Supplier by County upload failed: missing required columns: "
-            + ", ".join(missing)
-        )
-        return
-
-    # Restrict to required columns only
-    df = df[required_cols].copy()
 
     try:
         conn = connect_to_tenant_snowflake(toml_info)
@@ -1675,18 +1197,17 @@ def write_supplier_by_county_to_snowflake(df: pd.DataFrame):
         cursor.execute("BEGIN;")
         cursor.execute("TRUNCATE TABLE SUPPLIER_COUNTY;")
 
-        # Build records using positional tuples – no attribute-name issues
         records = [
             (
-                row[0],  # SUPPLIER
-                row[1],  # COUNTY
-                row[2],  # STATUS
+                row.Supplier,
+                row.County,
+                row.Status,
                 tenant_id,
                 now_ts,
                 now_ts,
                 today_date,
             )
-            for row in df.itertuples(index=False, name=None)
+            for row in df.itertuples(index=False)
         ]
 
         insert_sql = """

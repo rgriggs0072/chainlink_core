@@ -58,6 +58,7 @@
     <Compile Include="utils\admin_utils.py" />
     <Compile Include="utils\ai_placement_helpers.py" />
     <Compile Include="utils\auth_utils.py" />
+    <Compile Include="utils\class_validation_helpers.py" />
     <Compile Include="utils\dashboard_data\home_dashboard.py" />
     <Compile Include="utils\distro_grid_helpers.py" />
     <Compile Include="utils\email_utils.py" />

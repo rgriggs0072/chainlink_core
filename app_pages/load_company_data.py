@@ -9,13 +9,29 @@ from app_pages.load_company_sections import (
 )
 
 
+# def render():
+#     st.title("Format and Upload Company Data")
+
+#     render_sales_section()
+#     st.markdown("<hr>", unsafe_allow_html=True)
+#     render_customers_section()
+#     st.markdown("<hr>", unsafe_allow_html=True)
+#     render_products_section()
+#     st.markdown("<hr>", unsafe_allow_html=True)
+#     render_supplier_county_section()
+
+
 def render():
     st.title("Format and Upload Company Data")
 
-    render_sales_section()
-    st.markdown("<hr>", unsafe_allow_html=True)
-    render_customers_section()
-    st.markdown("<hr>", unsafe_allow_html=True)
-    render_products_section()
-    st.markdown("<hr>", unsafe_allow_html=True)
-    render_supplier_county_section()
+    with st.expander("Sales Report", expanded=False):
+        render_sales_section()
+
+    with st.expander("Customers", expanded=False):
+        render_customers_section()
+
+    with st.expander("Products", expanded=False):
+        render_products_section()
+
+    with st.expander("Supplier by County", expanded=False):
+        render_supplier_county_section()
