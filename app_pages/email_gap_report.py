@@ -288,10 +288,17 @@ def render():
     run_needed = False
     if submitted:
         new_hash = _filters_hash(chains, suppliers, salespeople)
-        if new_hash != st.session_state["egp_filters_hash"]:
+
+        # Safely get previous hash (None on first run / fresh session)
+        old_hash = st.session_state.get("egp_filters_hash")
+
+        # First run OR filters changed -> recompute + cache
+        if old_hash is None or new_hash != old_hash:
             st.session_state["egp_filters_hash"] = new_hash
             st.session_state["egp_filters"] = {
-                "chains": chains, "suppliers": suppliers, "salespeople": salespeople
+                "chains": chains,
+                "suppliers": suppliers,
+                "salespeople": salespeople,
             }
             run_needed = True
 
@@ -312,6 +319,8 @@ def render():
                     sp_gaps = df_gaps[df_gaps["SALESPERSON"] == sp]
                     metrics = compute_salesperson_metrics(sp_all)
                     html_by_salesperson[sp] = render_email_html(sp, metrics, sp_gaps)
+           
+
 
                 first_sp = next(iter(html_by_salesperson))
                 st.session_state["egp_results"] = {
