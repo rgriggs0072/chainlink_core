@@ -12,7 +12,7 @@ def render():
 
     conn = st.session_state.get("conn")
     if not conn:
-        st.error("? Snowflake connection not available.")
+        st.error("? Database connection not available.")
         return
 
     # Fetch filter options

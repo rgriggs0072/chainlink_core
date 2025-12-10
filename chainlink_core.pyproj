@@ -42,6 +42,7 @@
     <Compile Include="app_pages\reports.py" />
     <Compile Include="app_pages\reset_schedule.py" />
     <Compile Include="app_pages\reset_schedule_sections.py" />
+    <Compile Include="app_pages\sales_contacts_admin.py" />
     <Compile Include="app_pages\upload_product_catalog.py" />
     <Compile Include="app_pages\__init__.py" />
     <Compile Include="auth\forgot_password.py" />
@@ -60,7 +61,11 @@
     <Compile Include="utils\auth_utils.py" />
     <Compile Include="utils\class_validation_helpers.py" />
     <Compile Include="utils\dashboard_data\home_dashboard.py" />
+    <Compile Include="utils\distro_grid\formatters.py" />
+    <Compile Include="utils\distro_grid\schema.py" />
+    <Compile Include="utils\distro_grid\__init__.py" />
     <Compile Include="utils\distro_grid_helpers.py" />
+    <Compile Include="utils\email_gap_utils.py" />
     <Compile Include="utils\email_utils.py" />
     <Compile Include="utils\forecasting.py" />
     <Compile Include="utils\forecasting_truck.py" />
@@ -71,6 +76,7 @@
     <Compile Include="utils\pdf_reports.py" />
     <Compile Include="utils\reports_utils.py" />
     <Compile Include="utils\reset_schedule_helpers.py" />
+    <Compile Include="utils\sales_contacts.py" />
     <Compile Include="utils\sales_ingest.py" />
     <Compile Include="utils\snowflake_utils.py" />
     <Compile Include="utils\templates\email_templates.py" />
@@ -90,6 +96,7 @@
     <Folder Include="tenants\" />
     <Folder Include="sf_connector\" />
     <Folder Include="utils\dashboard_data\" />
+    <Folder Include="utils\distro_grid\" />
     <Folder Include="utils\templates\" />
   </ItemGroup>
   <ItemGroup>

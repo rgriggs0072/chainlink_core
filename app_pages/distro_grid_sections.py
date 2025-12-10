@@ -4,23 +4,35 @@ Distro Grid Streamlit sections
 
 Overview for future devs:
 - This module defines the two main UI sections for the Distro Grid workflow:
+
   1) render_distro_grid_formatter_section()
-     - Lets user download templates, pick chain/layout, upload raw grid, and
-       downloads a cleaned/normalized Excel file (no DB writes).
+     - Lets the user:
+       * Download standard / pivot templates (generated on the fly)
+       * Pick chain + layout (standard / pivot)
+       * Upload a raw grid
+       * Download a cleaned / normalized Excel file (NO DB WRITES)
+
   2) render_distro_grid_uploader_section()
-     - Lets user upload the formatted grid, validates CHAIN_NAME vs selection,
-       and pushes data into DISTRO_GRID via upload_distro_grid_to_snowflake().
+     - Lets the user:
+       * Select a chain
+       * Upload a previously formatted grid
+       * Validates CHAIN_NAME vs selection
+       * Calls upload_distro_grid_to_snowflake(), which:
+           - Archives old records for that chain+season
+           - Deletes old DISTRO_GRID rows for that chain
+           - Inserts new rows and runs UPDATE_DISTRO_GRID()
 
 Notes:
-- All heavy lifting (formatting logic, upload pipeline, procedure calls) is
-  in utils.distro_grid.formatters and utils.distro_grid_helpers.
-- Forms are used to avoid full page reruns on every widget change.
+- Heavy lifting lives in:
+    * utils.distro_grid.formatters
+    * utils.distro_grid_helpers
+- Forms are used to prevent full-page reruns on every widget interaction.
 """
 
-import streamlit as st
-import pandas as pd
-import openpyxl
 from io import BytesIO
+
+import pandas as pd
+import streamlit as st
 
 from utils.distro_grid.formatters import (
     format_uploaded_grid,
@@ -28,24 +40,98 @@ from utils.distro_grid.formatters import (
     build_pivot_template_xlsx,
 )
 from utils.distro_grid_helpers import (
-    format_pivot_table,              # legacy pivot formatter (kept for now)
     upload_distro_grid_to_snowflake,
-    update_spinner,                  # spinner callback for upload
+    update_spinner,  # spinner callback for upload
 )
 from utils.snowflake_utils import fetch_distinct_values
+
+
+# ---------------------------------------------------------------------
+# Internal helper: CHAIN_NAME validation
+# ---------------------------------------------------------------------
+
+
+def _validate_chain_in_df(df: pd.DataFrame, selected_chain: str, context: str) -> bool:
+    """
+    Validate that CHAIN_NAME in the uploaded DataFrame matches the
+    chain chosen in the UI.
+
+    - If no CHAIN_NAME column exists, returns True (nothing to validate).
+    - If mismatches exist, displays errors/warnings + sample rows and
+      returns False.
+
+    Args:
+        df:             DataFrame loaded from Excel.
+        selected_chain: Chain selected in the UI (case-insensitive).
+        context:        Short label for where this validation runs
+                        (e.g., 'formatter', 'uploader').
+
+    Returns:
+        bool: True if validation passes (or not applicable), False otherwise.
+    """
+    selected_chain_clean = selected_chain.strip().upper()
+
+    # Find a column that normalizes to CHAIN_NAME
+    chain_col = None
+    for col in df.columns:
+        normalized = str(col).strip().upper().replace(" ", "_")
+        if normalized == "CHAIN_NAME":
+            chain_col = col
+            break
+
+    if chain_col is None:
+        # No CHAIN_NAME column present; nothing to validate.
+        return True
+
+    df_chain = df.copy()
+    df_chain[chain_col] = (
+        df_chain[chain_col]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    mismatched = df_chain[
+        df_chain[chain_col].notna()
+        & (df_chain[chain_col] != selected_chain_clean)
+    ]
+
+    if mismatched.empty:
+        return True
+
+    unique_chains = sorted(x for x in df_chain[chain_col].dropna().unique())
+
+    st.error(
+        "❌ CHAIN_NAME mismatch detected between the file and your selection.\n\n"
+        f"- Selected chain: `{selected_chain_clean}`\n"
+        f"- Chains found in file ({context}): `{', '.join(unique_chains)}`"
+    )
+    st.warning(
+        "Rows below have CHAIN_NAME values that do not match "
+        f"'{selected_chain_clean}'. Please fix the file and try again."
+    )
+    st.dataframe(mismatched.head(200))
+
+    return False
 
 
 # ---------------------------------------------------------------------
 # Section 1: Formatter (no DB writes)
 # ---------------------------------------------------------------------
 
+
 def render_distro_grid_formatter_section():
     """
     Distro Grid - Step 1: Format spreadsheet (no DB writes)
 
-    UX notes:
-    - Template download buttons are at the top of the section.
-    - All heavy work (read/validate/format) is gated behind a st.form submit.
+    UX:
+    - Template download buttons at the top of the section.
+    - Form for:
+        * Chain selection
+        * Layout selection (standard / pivot)
+        * File upload
+        * "Format Now" submit
+    - Only runs formatting logic when the form is submitted.
     """
     st.subheader("Format Distribution Grid Spreadsheet")
 
@@ -104,7 +190,7 @@ def render_distro_grid_formatter_section():
             "Select Spreadsheet Format",
             ["Standard Column Format", "Pivot Table Format"],
             key="distro_grid_format_select",
-            help="Use 'Standard' for column layout. Pivot remains on legacy logic for now.",
+            help="Use 'Standard' for column layout. Pivot uses the new standardized pivot formatter.",
         )
 
         st.markdown("#### Step 2: Upload and Format")
@@ -132,74 +218,31 @@ def render_distro_grid_formatter_section():
 
     try:
         with st.spinner("Formatting distribution grid..."):
+            # Load the raw sheet as DataFrame
             raw_df = pd.read_excel(uploaded_file, engine="openpyxl")
 
             # 1) Validate CHAIN_NAME vs selected chain (if the column exists)
-            selected_chain_clean = selected_chain.strip().upper()
+            if not _validate_chain_in_df(
+                df=raw_df,
+                selected_chain=selected_chain,
+                context="formatter",
+            ):
+                return
 
-            chain_col = None
-            for col in raw_df.columns:
-                normalized = str(col).strip().upper().replace(" ", "_")
-                if normalized == "CHAIN_NAME":
-                    chain_col = col
-                    break
+            # 2) Run formatting via the standardized formatter
+            layout = "standard" if selected_format == "Standard Column Format" else "pivot"
 
-            if chain_col is not None:
-                df_chain = raw_df.copy()
-                df_chain[chain_col] = (
-                    df_chain[chain_col]
-                    .astype(str)
-                    .str.strip()
-                    .str.upper()
-                )
+            formatted_df = format_uploaded_grid(
+                df_raw=raw_df,
+                layout=layout,
+                chain_name=selected_chain,
+            )
 
-                mismatched = df_chain[
-                    df_chain[chain_col].notna()
-                    & (df_chain[chain_col] != selected_chain_clean)
-                ]
-
-                if not mismatched.empty:
-                    unique_chains = sorted(
-                        x for x in df_chain[chain_col].dropna().unique()
-                    )
-                    st.error(
-                        "❌ CHAIN_NAME mismatch detected between the file and "
-                        f"your selection.\n\n"
-                        f"- Selected chain: `{selected_chain_clean}`\n"
-                        f"- Chains found in file: `{', '.join(unique_chains)}`"
-                    )
-                    st.warning(
-                        "Rows below have CHAIN_NAME values that do not match "
-                        f"'{selected_chain_clean}'. Please fix the file and try again."
-                    )
-                    st.dataframe(mismatched.head(200))
-                    return
-
-            # 2) Run formatting
-            if selected_format == "Standard Column Format":
-                # New standardized formatter
-                formatted_df = format_uploaded_grid(
-                    df_raw=raw_df,
-                    layout="standard",
-                    chain_name=selected_chain,
-                )
-
-                buffer = BytesIO()
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    formatted_df.to_excel(writer, index=False)
-                buffer.seek(0)
-
-            else:
-                # Legacy path for pivot-style uploads
-                workbook = openpyxl.load_workbook(uploaded_file)
-                formatted_wb = format_pivot_table(
-                    workbook,
-                    selected_option=selected_chain,
-                )
-
-                buffer = BytesIO()
-                formatted_wb.save(buffer)
-                buffer.seek(0)
+            # Build downloadable Excel file from formatted DataFrame
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                formatted_df.to_excel(writer, index=False)
+            buffer.seek(0)
 
         # Download button for the formatted file
         st.download_button(
@@ -212,8 +255,6 @@ def render_distro_grid_formatter_section():
 
         st.success("Formatting complete. Download the cleaned file above.")
 
-    except NotImplementedError as nie:
-        st.error(str(nie))
     except Exception as e:
         st.error(f"Failed to format distribution grid: {e}")
 
@@ -222,13 +263,15 @@ def render_distro_grid_formatter_section():
 # Section 2: Uploader (DB write)
 # ---------------------------------------------------------------------
 
+
 def render_distro_grid_uploader_section():
     """
     Distro Grid - Step 2: Upload formatted grid to Snowflake
 
     UX:
     - Uses a form so heavy work only runs on submit.
-    - No season picker; season is inferred automatically in the backend.
+    - No season picker; season is inferred automatically in the backend
+      (Spring/Fall <year> via infer_season_label()).
     - Validates CHAIN_NAME in the file matches the selected chain.
     - Shows a small preview before upload.
     """
@@ -295,45 +338,12 @@ def render_distro_grid_uploader_section():
         st.dataframe(df.head())
 
         # --- Validate CHAIN_NAME in file vs selected_chain ---
-        selected_chain_clean = selected_chain.strip().upper()
-
-        chain_col = None
-        for col in df.columns:
-            normalized = str(col).strip().upper().replace(" ", "_")
-            if normalized == "CHAIN_NAME":
-                chain_col = col
-                break
-
-        if chain_col is not None:
-            df_chain = df.copy()
-            df_chain[chain_col] = (
-                df_chain[chain_col]
-                .astype(str)
-                .str.strip()
-                .str.upper()
-            )
-
-            mismatched = df_chain[
-                df_chain[chain_col].notna()
-                & (df_chain[chain_col] != selected_chain_clean)
-            ]
-
-            if not mismatched.empty:
-                unique_chains = sorted(
-                    x for x in df_chain[chain_col].dropna().unique()
-                )
-                st.error(
-                    "❌ CHAIN_NAME mismatch detected between the file and "
-                    f"your selection.\n\n"
-                    f"- Selected chain: `{selected_chain_clean}`\n"
-                    f"- Chains found in file: `{', '.join(unique_chains)}`"
-                )
-                st.warning(
-                    "Rows below have CHAIN_NAME values that do not match "
-                    f"'{selected_chain_clean}'. Please fix the file and try again."
-                )
-                st.dataframe(mismatched.head(200))
-                return
+        if not _validate_chain_in_df(
+            df=df,
+            selected_chain=selected_chain,
+            context="uploader",
+        ):
+            return
 
         # --- Upload via helper (season inferred in backend) ---
         with st.spinner("Uploading distribution grid and updating Database..."):

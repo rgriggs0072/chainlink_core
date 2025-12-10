@@ -1,8 +1,10 @@
 ﻿# ------------- load_company_sections.py -------------
 
 import streamlit as st
+from openpyxl import Workbook
 import openpyxl
 import pandas as pd
+from io import BytesIO
 from utils.load_company_data_helpers import (
     format_sales_report, write_salesreport_to_snowflake,
     format_customers_report, write_customers_to_snowflake,
@@ -61,17 +63,34 @@ def render_sales_section():
         "for the multi-tenant app."
     )
 
-    # --- Template download ---
+        # --- Template download ---
     template_df = generate_sales_template()
-    csv_bytes = template_df.to_csv(index=False).encode("utf-8")
+
+    # Build a real XLSX using openpyxl (no xlsxwriter dependency)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sales_Template"
+
+    # Write headers
+    ws.append(list(template_df.columns))
+
+    # Write rows
+    for row in template_df.itertuples(index=False, name=None):
+        ws.append(list(row))
+
+    # Save workbook to memory
+    xlsx_buffer = BytesIO()
+    wb.save(xlsx_buffer)
+    xlsx_buffer.seek(0)
 
     st.download_button(
-        label="📥 Download Sales Report Template (CSV)",
-        data=csv_bytes,
-        file_name="sales_report_template.csv",
-        mime="text/csv",
+        label="📥 Download Sales Report Template (xlsx)",
+        data=xlsx_buffer.getvalue(),
+        file_name="sales_report_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="sales_template_download",
     )
+
 
     st.markdown("### Upload Completed Sales Template")
     uploaded = st.file_uploader(
@@ -85,7 +104,7 @@ def render_sales_section():
     if uploaded is not None:
         # --- Step 1: Load raw file ---
         try:
-            # XLSX only (user opens CSV template in Excel, saves as xlsx, uploads)
+            # XLSX only (user opens XLSX template in Excel, saves as xlsx, uploads)
             raw_df = pd.read_excel(uploaded, engine="openpyxl")
         except Exception as e:
             st.error(f"❌ Failed to read Sales file: {e}")
@@ -110,7 +129,7 @@ def render_sales_section():
             raw_df["UPC"] = raw_df["UPC"].apply(_normalize_excel_upc)
 
         st.write("Raw uploaded data (first 10 rows):")
-        # st.dataframe(raw_df.head(10), use_container_width=True)
+        # st.dataframe(raw_df.head(10), width='strtch')
 
         # --- Step 2: Light formatting / normalization ---
         try:
@@ -155,7 +174,7 @@ def render_sales_section():
         # If we're here, validation passed
         cleaned_df = result.cleaned_df
         st.success("✅ Validation passed. Preview of cleaned Sales data:")
-        st.dataframe(cleaned_df.head(20), use_container_width=True)
+        st.dataframe(cleaned_df.head(20), width='stretch')
 
         # --- Final upload action ---
         if st.button(
@@ -171,7 +190,7 @@ def render_sales_section():
     # Legacy path kept for rollback / comparison (Excel formatter)
     # ------------------------------------------------------------------
     st.markdown("---")
-    with st.expander("Legacy: Excel Sales Formatter (temporary)", expanded=False):
+    with st.expander("Legacy: Excel Sales Formatter (Encompass)", expanded=False):
         st.subheader("Format Sales Report (Legacy)")
 
         legacy_file = st.file_uploader(
@@ -191,7 +210,7 @@ def render_sales_section():
                 st.error(f"Error formatting Sales Report (legacy): {e}")
 
         st.markdown("---")
-        st.subheader("Upload Legacy Formatted Sales Report to Snowflake")
+        st.subheader("Upload Legacy Formatted Sales Report to Database")
 
         sales_final = st.file_uploader(
             "Upload legacy formatted Sales Report",
@@ -206,9 +225,9 @@ def render_sales_section():
                     engine="openpyxl",
                     sheet_name="SALES REPORT",
                 )
-                st.dataframe(df_legacy.head(), use_container_width=True)
+                st.dataframe(df_legacy.head(), width='stretch')
                 if st.button(
-                    "Upload legacy Sales to Snowflake",
+                    "Upload legacy Sales to Database",
                     key="upload_sales_legacy_btn",
                 ):
                     write_salesreport_to_snowflake(df_legacy)
@@ -336,7 +355,7 @@ def render_customers_section():
                 st.error("Validation failed. Please fix these issues and re-upload:")
                 for msg in errors:
                     st.write(f"- {msg}")
-                st.dataframe(formatted_df.head(50), use_container_width=True)
+                st.dataframe(formatted_df.head(50), width='stretch')
             else:
                 # Non-fatal warnings
                 if warnings:
@@ -346,7 +365,7 @@ def render_customers_section():
 
                 # Show preview of what will be loaded
                 st.success("Validation passed. Preview of cleaned Customers data:")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50), width='stretch')
 
                 # Final upload button
                 if st.button("Upload Customers to Snowflake", key="upload_customers_btn"):
@@ -477,10 +496,10 @@ def render_products_section():
                 st.error("Validation failed. Please fix these issues and re-upload:")
                 for msg in errors:
                     st.write(f"- {msg}")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50), width='stretch')
             else:
                 st.success("Validation passed. Preview of cleaned Products data:")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
 
                 if st.button("Upload Products to Snowflake", key="upload_products_btn_new"):
                     with st.spinner("Uploading Products to Snowflake..."):
@@ -638,11 +657,11 @@ def render_supplier_county_section():
                 st.error("❌ Validation failed:")
                 for e in errors:
                     st.markdown(f"- {e}")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
 
             else:
                 st.success("✅ Validation passed. Preview:")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
 
                 if st.button("Upload Supplier by County to Snowflake",
                              key="supplier_cty_upload_btn"):
@@ -672,7 +691,7 @@ def render_supplier_county_section():
                     legacy_df = format_supplier_by_county(legacy_file)
 
                 if legacy_df is not None:
-                    st.dataframe(legacy_df.head(50), use_container_width=True)
+                    st.dataframe(legacy_df.head(50),  width='stretch')
                     st.success("Legacy file formatted. Paste results into the template above if needed.")
             except Exception as e:
                 st.error(f"❌ Error formatting legacy file: {e}")

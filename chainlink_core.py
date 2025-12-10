@@ -44,6 +44,7 @@ from nav.navigation_bar import (
     render_format_upload_submenu,
     render_reports_submenu,
     render_ai_forecasts_submenu, 
+    render_admin_submenu,
 
 )
 
@@ -394,7 +395,18 @@ def main():
             if not is_admin:
                 st.warning("You don’t have access to Admin.")
                 st.rerun()
-            _safe_import("app_pages.admin").render()
+
+            admin_page = render_admin_submenu()
+            route = {
+                "Admin Dashboard": "app_pages.admin",
+                "Sales Contacts Admin": "app_pages.sales_contacts_admin",
+            }.get(admin_page)
+
+            if not route:
+                st.warning("Invalid admin selection.")
+                return
+
+            _safe_import(route).render()
             return
 
         st.warning("Unknown menu selection.")

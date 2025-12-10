@@ -1,5 +1,6 @@
 ﻿# ------------ navigation_bar.py ------------
 
+import streamlit as st
 from streamlit_option_menu import option_menu
 from nav.menu_styles import common_menu_styles
 
@@ -72,6 +73,22 @@ def render_ai_forecasts_submenu() -> str:
         options=["Predictive Purchases", "Predictive Truck Plan", "AI-Narrative Report", "Placement Intelligence"],
         icons=["graph-up-arrow"],
         menu_icon="stars",
+        default_index=0,
+        orientation="horizontal",
+        styles=common_menu_styles,
+    )
+
+
+def render_admin_submenu() -> str:
+    """
+    Admin submenu using the same horizontal option_menu style
+    as the AI & Forecasts submenu.
+    """
+    return option_menu(
+        menu_title="",
+        options=["Admin Dashboard", "Sales Contacts Admin"],
+        icons=["gear", "envelope"],        # good icon pair; feel free to adjust
+        menu_icon="tools",
         default_index=0,
         orientation="horizontal",
         styles=common_menu_styles,

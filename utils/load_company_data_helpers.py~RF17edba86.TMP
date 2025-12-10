@@ -23,12 +23,12 @@ Notes:
 
 from datetime import datetime
 from io import BytesIO
-
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import numbers
 from openpyxl import Workbook
-
 from sf_connector.service_connector import connect_to_tenant_snowflake
 from utils.class_validation_helpers import (
     ColumnRule,
@@ -78,11 +78,7 @@ def format_sales_report(workbook):
     """
     try:
         # Prefer an existing "SALES REPORT" sheet if present; otherwise use the first sheet.
-        sheet_name = (
-            "SALES REPORT"
-            if "SALES REPORT" in workbook.sheetnames
-            else workbook.sheetnames[0]
-        )
+        sheet_name = "SALES REPORT" if "SALES REPORT" in workbook.sheetnames else workbook.sheetnames[0]
 
         # Drop all other sheets
         for name in list(workbook.sheetnames):
@@ -93,6 +89,15 @@ def format_sales_report(workbook):
         ws.title = "SALES REPORT"
 
         # --- Rename header row to match SALES_SCHEMA ---
+        # A: Chain Store Number      -> STORE_NUMBER
+        # B: Customer Name           -> STORE_NAME
+        # C: Shipping Address        -> ADDRESS
+        # D: Salesman Assigned       -> SALESPERSON
+        # E: Product Name            -> PRODUCT_NAME
+        # F: Carrier UPC             -> UPC
+        # G: Buyer Count ...         -> PURCHASED_YES_NO
+        # H: Buyer Count %           -> dropped
+
         ws["A1"].value = "STORE_NUMBER"
         ws["B1"].value = "STORE_NAME"
         ws["C1"].value = "ADDRESS"
@@ -105,7 +110,7 @@ def format_sales_report(workbook):
         if ws.max_column >= 8:
             ws.delete_cols(8)
 
-        # --- Normalize UPC: digits-only in column F ---
+          # --- Normalize UPC: digits-only in column F ---
         for cell in ws["F"][1:]:  # skip header
             val = cell.value
             if val is None:
@@ -132,9 +137,10 @@ def format_sales_report(workbook):
         # Force integer formatting (no decimals)
         for cell in ws["G"][1:]:  # includes header row if needed
             try:
-                cell.number_format = "0"  # no decimals
-            except Exception:
+                cell.number_format = "0"   # <-- no decimals
+            except:
                 pass
+
 
         # --- Clean STORE_NAME (col B): drop " #XXXX" suffix, clean punctuation ---
         for cell in ws["B"][1:]:
@@ -144,9 +150,9 @@ def format_sales_report(workbook):
                     raw = raw.split("#", 1)[0].strip()
                 cleaned = (
                     raw.replace(",", " ")
-                    .replace(" 's", "")
-                    .replace("'", "")
-                    .strip()
+                       .replace(" 's", "")
+                       .replace("'", "")
+                       .strip()
                 )
                 cell.value = cleaned
 
@@ -156,9 +162,9 @@ def format_sales_report(workbook):
                 if isinstance(cell.value, str):
                     cell.value = (
                         cell.value.replace(",", " ")
-                        .replace(" 's", "")
-                        .replace("'", "")
-                        .strip()
+                                  .replace(" 's", "")
+                                  .replace("'", "")
+                                  .strip()
                     )
 
         return workbook
@@ -166,6 +172,7 @@ def format_sales_report(workbook):
     except Exception as e:
         st.error(f"Error formatting sales report: {str(e)}")
         return None
+
 
 
 def format_customers_report(workbook):
@@ -244,7 +251,7 @@ def format_customers_report(workbook):
 
 
 # =============================================================================
-# 🧪 COMMON NORMALIZATION HELPERS
+# 🧪 NEW CUSTOMERS TEMPLATE + VALIDATION LAYER
 # =============================================================================
 
 
@@ -258,6 +265,21 @@ def _normalize_str_series(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
     s = s.replace({"nan": None, "None": None, "": None})
     return s
+
+
+# Schema must match CUSTOMERS table (minus server-side audit cols).
+CUSTOMERS_SCHEMA = [
+    ColumnRule("CUSTOMER_ID", required=True, dtype="int"),
+    ColumnRule("CHAIN_NAME", required=True, dtype="str"),
+    ColumnRule("STORE_NUMBER", required=True, dtype="int"),
+    ColumnRule("STORE_NAME", required=True, dtype="str"),
+    ColumnRule("ADDRESS", required=True, dtype="str"),
+    ColumnRule("CITY", required=True, dtype="str"),
+    ColumnRule("COUNTY", required=True, dtype="str"),
+    ColumnRule("SALESPERSON", required=True, dtype="str", allow_blank=False),
+    ColumnRule("ACCOUNT_STATUS", required=True, dtype="str"),
+    # TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE handled server-side.
+]
 
 
 def _normalize_store_name(name: str | None) -> str:
@@ -276,67 +298,98 @@ def _normalize_store_name(name: str | None) -> str:
     return s
 
 
+
 def _clean_upc(value):
     """
     Normalize UPC-like values by stripping all non-digit characters.
 
-    Rules:
-    - If value is int: use the integer as-is.
-    - If value is float: convert to int first (removes .0 and sci-notation issues).
-    - If value is string: strip, handle 'nan'/'None', and keep digits only.
-    - Return cleaned digit string or None.
+    Example:
+        '8-5000079211-1' -> '850000792111'
+        'ABC123XYZ' -> '123'
+        '' / None / 'nan' -> None
     """
-    # Null / NaN handling
     if value is None:
         return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        # Non-pandas scalars just fall through
-        pass
 
-    # Handle pure integers
-    if isinstance(value, int):
-        s = str(value)
-
-    # Handle floats (Excel numbers come in as floats)
-    elif isinstance(value, float):
-        try:
-            # Safely convert float → int to avoid .0 or sci-notation leakage
-            s = str(int(round(value)))
-        except Exception:
-            s = str(value).strip()
-
-    # Handle everything else as a string
-    else:
-        s = str(value).strip()
-
+    s = str(value).strip()
     if not s or s.lower() in ("nan", "none"):
         return None
 
-    # Digits only
     digits_only = "".join(ch for ch in s if ch.isdigit())
     return digits_only or None
 
 
-# =============================================================================
-# 🧪 NEW CUSTOMERS TEMPLATE + VALIDATION LAYER
-# =============================================================================
+def _validate_sales_upc(series: pd.Series) -> list[str]:
+    """
+    Per-row UPC validator for SALES_REPORT uploads.
 
-# Schema must match CUSTOMERS table (minus server-side audit cols).
-CUSTOMERS_SCHEMA = [
-    ColumnRule("CUSTOMER_ID", required=True, dtype="int"),
-    ColumnRule("CHAIN_NAME", required=True, dtype="str"),
-    ColumnRule("STORE_NUMBER", required=True, dtype="int"),
-    ColumnRule("STORE_NAME", required=True, dtype="str"),
-    ColumnRule("ADDRESS", required=True, dtype="str"),
-    ColumnRule("CITY", required=True, dtype="str"),
-    ColumnRule("COUNTY", required=True, dtype="str"),
-    ColumnRule("SALESPERSON", required=True, dtype="str", allow_blank=False),
-    ColumnRule("ACCOUNT_STATUS", required=True, dtype="str"),
-    # TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE handled server-side.
-]
+    Rules:
+      - After cleaning (digits only), UPC must not be empty.
+      - Length must be 11 or 12 digits (standard UPC formats).
+      - We report row numbers relative to a 1-based Excel-style sheet:
+        assume header is row 1, so DataFrame index 0 => row 2, etc.
+    """
+    errors: list[str] = []
+
+    for idx, raw in series.items():
+        row_num = idx + 2  # header is row 1 in the typical Excel template
+        cleaned = _clean_upc(raw)
+
+        # Completely missing / no digits at all
+        if cleaned is None:
+            errors.append(
+                f"Row {row_num}: UPC is missing or contains no usable digits (value={repr(raw)})."
+            )
+            continue
+
+        # Must be all digits (paranoid check; _clean_upc already strips non-digits)
+        if not cleaned.isdigit():
+            errors.append(
+                f"Row {row_num}: UPC '{raw}' cleaned to '{cleaned}', which still contains non-digit characters."
+            )
+            continue
+
+        # Length check: typical UPC-A / EAN-like values are 11 or 12 digits
+        if len(cleaned) not in (10, 11,12):
+            errors.append(
+                f"Row {row_num}: UPC '{raw}' cleaned to '{cleaned}' has length {len(cleaned)}; "
+                f"expected 10, 11 or 12 digits."
+            )
+
+    return errors
+
+
+def _validate_purchased_flag(series: pd.Series) -> list[str]:
+    """
+    Validator for PURCHASED_YES_NO:
+      - Must be 0 or 1 for every row.
+    """
+    errors: list[str] = []
+
+    for idx, raw in series.items():
+        row_num = idx + 2  # again, header = row 1
+        if pd.isna(raw):
+            errors.append(
+                f"Row {row_num}: PURCHASED_YES_NO is blank; expected 0 or 1."
+            )
+            continue
+
+        try:
+            val = int(raw)
+        except Exception:
+            errors.append(
+                f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not an integer; expected 0 or 1."
+            )
+            continue
+
+        if val not in (0, 1):
+            errors.append(
+                f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not valid; expected 0 or 1."
+            )
+
+    return errors
+
+
 
 
 def generate_customers_template() -> pd.DataFrame:
@@ -480,91 +533,19 @@ def validate_customers_against_existing_chains(
 # 🧪 SALES REPORT TEMPLATE + VALIDATION LAYER
 # =============================================================================
 
-
-def _validate_sales_upc(series: pd.Series) -> list[str]:
-    """
-    Per-row UPC validator for SALES_REPORT uploads.
-
-    Rules:
-      - After cleaning (digits only), UPC must not be empty.
-      - Length must be 10, 11 or 12 digits.
-      - We report row numbers relative to a 1-based Excel-style sheet:
-        assume header is row 1, so DataFrame index 0 => row 2, etc.
-    """
-    errors: list[str] = []
-
-    for idx, raw in series.items():
-        row_num = idx + 2  # header is row 1 in the typical Excel template
-        cleaned = _clean_upc(raw)
-
-        # Completely missing / no digits at all
-        if cleaned is None:
-            errors.append(
-                f"Row {row_num}: UPC is missing or contains no usable digits (value={repr(raw)})."
-            )
-            continue
-
-        # Must be all digits (paranoid check; _clean_upc already strips non-digits)
-        if not cleaned.isdigit():
-            errors.append(
-                f"Row {row_num}: UPC '{raw}' cleaned to '{cleaned}', which still contains non-digit characters."
-            )
-            continue
-
-        # Length check: 10, 11 or 12 digits
-        if len(cleaned) not in (10, 11, 12):
-            errors.append(
-                f"Row {row_num}: UPC '{raw}' cleaned to '{cleaned}' has length {len(cleaned)}; "
-                f"expected 10, 11 or 12 digits."
-            )
-
-    return errors
-
-
-def _validate_purchased_flag(series: pd.Series) -> list[str]:
-    """
-    Validator for PURCHASED_YES_NO:
-      - Must be 0 or 1 for every row.
-    """
-    errors: list[str] = []
-
-    for idx, raw in series.items():
-        row_num = idx + 2  # again, header = row 1
-        if pd.isna(raw):
-            errors.append(
-                f"Row {row_num}: PURCHASED_YES_NO is blank; expected 0 or 1."
-            )
-            continue
-
-        try:
-            val = int(raw)
-        except Exception:
-            errors.append(
-                f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not an integer; expected 0 or 1."
-            )
-            continue
-
-        if val not in (0, 1):
-            errors.append(
-                f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not valid; expected 0 or 1."
-            )
-
-    return errors
-
-
 # Schema must match SALES_REPORT table (minus audit/audit-like columns).
 SALES_SCHEMA = [
-    ColumnRule("STORE_NUMBER", required=True, dtype="int"),
-    ColumnRule("STORE_NAME", required=True, dtype="str"),
-    ColumnRule("ADDRESS", required=True, dtype="str"),
-    ColumnRule("SALESPERSON", required=True, dtype="str"),
-    ColumnRule("PRODUCT_NAME", required=True, dtype="str"),
+    ColumnRule("STORE_NUMBER",   required=True, dtype="int"),
+    ColumnRule("STORE_NAME",     required=True, dtype="str"),
+    ColumnRule("ADDRESS",        required=True, dtype="str"),
+    ColumnRule("SALESPERSON",    required=True, dtype="str"),
+    ColumnRule("PRODUCT_NAME",   required=True, dtype="str"),
     ColumnRule(
         "UPC",
         required=True,
         dtype="str",
         allow_blank=False,
-        validators=[_validate_sales_upc],
+        validators=[_validate_sales_upc],   # ⬅ hook in our custom UPC validator
     ),
     ColumnRule(
         "PURCHASED_YES_NO",
@@ -598,7 +579,6 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
         * STORE_NAME: strip '#XXXX' suffix, remove quotes, uppercase.
         * UPC: digits only via _clean_upc().
         * Text fields: trimmed, normalized via _normalize_str_series.
-        * PURCHASED_YES_NO: int 0/1 (no 1.00 floats).
     """
     df = raw_df.copy()
 
@@ -634,7 +614,7 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
             .str.strip()
         )
 
-    # Clean UPC if present
+    # Clean UPC if present (digits only)
     if "UPC" in df.columns:
         df["UPC"] = df["UPC"].apply(_clean_upc)
 
@@ -642,12 +622,6 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
     for col in ["ADDRESS", "SALESPERSON", "PRODUCT_NAME"]:
         if col in df.columns:
             df[col] = _normalize_str_series(df[col])
-
-    # Ensure PURCHASED_YES_NO comes through as 0/1 ints (no 1.00 floats)
-    if "PURCHASED_YES_NO" in df.columns:
-        df["PURCHASED_YES_NO"] = (
-            df["PURCHASED_YES_NO"].astype(float).fillna(0).round(0).astype(int)
-        )
 
     return df
 
@@ -663,9 +637,7 @@ def validate_sales_upload(df: pd.DataFrame) -> ValidationResult:
     return validate_dataframe(df, SALES_SCHEMA)
 
 
-def _build_missing_store_number_error(
-    df: pd.DataFrame, missing_values: set[int]
-) -> str:
+def _build_missing_store_number_error(df: pd.DataFrame, missing_values: set[int]) -> str:
     """
     Build a detailed message showing which Excel rows contain STORE_NUMBERs
     that do NOT exist in CUSTOMERS for this tenant.
@@ -696,6 +668,7 @@ def _build_missing_store_number_error(
     )
 
     return "\n".join(lines)
+
 
 
 def validate_sales_against_customers(df: pd.DataFrame) -> tuple[list[str], list[str]]:
@@ -835,6 +808,19 @@ def validate_sales_against_customers(df: pd.DataFrame) -> tuple[list[str], list[
     return errors, warnings
 
 
+
+
+
+
+
+
+
+
+
+# =============================================================================
+# 📊 SUPPLIER BY COUNTY FORMATTER
+# =============================================================================
+
 # =============================================================================
 # 📌 SUPPLIER BY COUNTY – REQUIRED COLUMNS (Upload Template)
 # =============================================================================
@@ -845,7 +831,6 @@ SUPPLIER_COUNTY_REQUIRED_COLUMNS = [
     "STATUS",
 ]
 
-
 def generate_supplier_county_template() -> pd.DataFrame:
     """
     Generates an empty Supplier by County template.
@@ -854,9 +839,7 @@ def generate_supplier_county_template() -> pd.DataFrame:
     return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
 
 
-def validate_supplier_county_upload(
-    df_raw: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[str]]:
+def validate_supplier_county_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """
     Validate uploaded Supplier by County template.
 
@@ -865,7 +848,7 @@ def validate_supplier_county_upload(
     - COUNTY: required, non-empty
     - STATUS: required ("Yes" or "No"; case-insensitive)
     """
-    errors: list[str] = []
+    errors = []
 
     df = df_raw.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
@@ -873,7 +856,9 @@ def validate_supplier_county_upload(
     # Check columns
     missing = [c for c in SUPPLIER_COUNTY_REQUIRED_COLUMNS if c not in df.columns]
     if missing:
-        errors.append("Missing required columns: " + ", ".join(missing))
+        errors.append(
+            "Missing required columns: " + ", ".join(missing)
+        )
         return df, errors
 
     # Restrict to required columns only
@@ -895,13 +880,17 @@ def validate_supplier_county_upload(
     missing_supplier = df["SUPPLIER"] == ""
     if missing_supplier.any():
         rows = [i + 2 for i in df.index[missing_supplier]]
-        errors.append("SUPPLIER is required for row(s): " + ", ".join(map(str, rows)))
+        errors.append(
+            "SUPPLIER is required for row(s): " + ", ".join(map(str, rows))
+        )
 
     # Validate COUNTY
     missing_county = df["COUNTY"] == ""
     if missing_county.any():
         rows = [i + 2 for i in df.index[missing_county]]
-        errors.append("COUNTY is required for row(s): " + ", ".join(map(str, rows)))
+        errors.append(
+            "COUNTY is required for row(s): " + ", ".join(map(str, rows))
+        )
 
     # Validate STATUS
     allowed = {"YES", "NO"}
@@ -916,6 +905,8 @@ def validate_supplier_county_upload(
         )
 
     return df, errors
+
+
 
 
 def format_supplier_by_county(file_content) -> pd.DataFrame:
@@ -966,14 +957,16 @@ def format_supplier_by_county(file_content) -> pd.DataFrame:
         return None
 
 
+
+
 # ------------------------------------------------------------------------------------------------------------------------
-# New Products template + validation layer (legacy openpyxl formatter kept for rollback)
+# New Products tmplate + validation layer (legacy openpyxl formatter kept for rollback)
+# Randy Griggs 11/23/2025
 # ------------------------------------------------------------------------------------------------------------------------
 
 # =============================================================================
 # 📄 PRODUCTS TEMPLATE (for download)
 # =============================================================================
-
 
 def create_products_template_workbook():
     """
@@ -1004,8 +997,16 @@ def create_products_template_workbook():
     return wb
 
 
+
+
+
+
+
+
+
+
 # =============================================================================
-# 📦 PRODUCTS FORMATTER (legacy openpyxl path)
+# 📦 PRODUCTS FORMATTER
 # =============================================================================
 
 
@@ -1189,6 +1190,7 @@ def _fetch_customer_chain_lookup(conn, tenant_id: str) -> dict:
         return {}
 
 
+
 # =============================================================================
 # 📥 SALES_REPORT UPLOAD
 # =============================================================================
@@ -1199,7 +1201,7 @@ def write_salesreport_to_snowflake(df: pd.DataFrame):
     Upload cleaned sales report to Snowflake.
 
     Enhancements:
-    - Cleans UPC (digits only, handles floats/ints/strings)
+    - Cleans UPC (digits only)
     - Cleans STORE_NAME ('SMART & FINAL #829' -> 'SMART & FINAL')
     - Enriches CHAIN_NAME from CUSTOMERS table per tenant (if column exists)
     - Uses TRUNCATE + INSERT wrapped in a transaction
@@ -1225,12 +1227,6 @@ def write_salesreport_to_snowflake(df: pd.DataFrame):
             .str.split("#")
             .str[0]
             .str.strip()
-        )
-
-    # Ensure PURCHASED_YES_NO is int 0/1 (no floats)
-    if "PURCHASED_YES_NO" in df.columns:
-        df["PURCHASED_YES_NO"] = (
-            df["PURCHASED_YES_NO"].astype(float).fillna(0).round(0).astype(int)
         )
 
     conn, cursor, tenant_id = _get_conn_and_cursor()
@@ -1261,13 +1257,14 @@ def write_salesreport_to_snowflake(df: pd.DataFrame):
                 row.UPC,
                 row.PURCHASED_YES_NO,
                 tenant_id,
-                now_ts,  # CREATED_AT
-                None,  # SALE_DATE (NULL)
+                now_ts,              # CREATED_AT
+                None,                # SALE_DATE (NULL)
                 row.CHAIN_NAME,
-                today_date,  # LAST_LOAD_DATE
+                today_date,          # LAST_LOAD_DATE
             )
-            for row in df.itertuples(index=False)
-        ]
+    for row in df.itertuples(index=False)
+]
+
 
         insert_sql = """
             INSERT INTO SALES_REPORT (
@@ -1285,6 +1282,8 @@ def write_salesreport_to_snowflake(df: pd.DataFrame):
                 LAST_LOAD_DATE
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+
+
         """
         cursor.executemany(insert_sql, records)
         _finalize_transaction(cursor, conn, "✅ Sales report uploaded.")
@@ -1365,10 +1364,17 @@ def write_customers_to_snowflake(df: pd.DataFrame):
         st.error(f"❌ Customer upload failed: {str(e)}")
 
 
-# =============================================================================
-# ✅ PRODUCTS TEMPLATE (DataFrame-based)
-# =============================================================================
 
+# ------------------------------------------------------------------------------------------------------------------------------------
+# New Products upload function (legacy openpyxl version kept for rollback)
+# Randy Griggs 11/23/2025
+#------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+# =============================================================================
+# ✅ PRODUCTS UPLOAD VALIDATION (DataFrame-level)
+# =============================================================================
 
 REQUIRED_PRODUCT_COLUMNS = [
     "PRODUCT_ID",
@@ -1379,6 +1385,10 @@ REQUIRED_PRODUCT_COLUMNS = [
     "PRODUCT_MANAGER",
 ]
 
+
+# =============================================================================
+# 📄 PRODUCTS TEMPLATE (for download)
+# =============================================================================
 
 def generate_products_template() -> pd.DataFrame:
     """
@@ -1404,6 +1414,23 @@ def generate_products_template() -> pd.DataFrame:
     return template_df
 
 
+
+
+
+# =============================================================================
+# ✅ PRODUCTS UPLOAD VALIDATION (DataFrame-level)
+# =============================================================================
+
+REQUIRED_PRODUCT_COLUMNS = [
+    "PRODUCT_ID",
+    "SUPPLIER",
+    "PRODUCT_NAME",
+    "PACKAGE",
+    "CARRIER_UPC",
+    "PRODUCT_MANAGER",
+]
+
+
 def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """
     Validate and clean the uploaded Products DataFrame.
@@ -1416,7 +1443,8 @@ def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[s
         * Must be numeric (digits only)
         * Must be UNIQUE across the uploaded file
     - CARRIER_UPC:
-        * Cleaned via _clean_upc (handles floats/ints/strings, strips non-digits)
+        * Treated as string
+        * Strip '.0', spaces, hyphens
         * REQUIRED (no blank)
         * Digits-only
         * Max length 20
@@ -1451,14 +1479,12 @@ def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[s
             df[col]
             .astype(str)
             .str.strip()
-            .replace(
-                {
-                    "nan": "",
-                    "NaN": "",
-                    "NONE": "",
-                    "None": "",
-                }
-            )
+            .replace({
+                "nan": "",
+                "NaN": "",
+                "NONE": "",
+                "None": "",
+            })
         )
 
     # ------------------------------------------------------------------
@@ -1510,46 +1536,52 @@ def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[s
     # ------------------------------------------------------------------
     # 7) Clean / validate CARRIER_UPC
     # ------------------------------------------------------------------
-    df["CARRIER_UPC"] = df["CARRIER_UPC"].apply(_clean_upc)
+    def _clean_upc(value):
+    """
+    Normalize UPC-like values by stripping all non-digit characters.
 
-    # Missing / blank after cleaning
-    missing_upc_mask = df["CARRIER_UPC"].isna() | (df["CARRIER_UPC"] == "")
-    if missing_upc_mask.any():
-        idxs = df.index[missing_upc_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC is required and cannot be blank (or non-numeric) for row(s): "
-            + ", ".join(map(str, human_rows))
-            + "."
-        )
+    Rules:
+    - If value is int: use the integer as-is.
+    - If value is float: convert to int first (removes .0 and sci-notation issues).
+    - If value is string: strip, handle 'nan'/'None', and keep digits only.
+    - Return cleaned digit string or None.
+    """
+    import pandas as pd
 
-    # Length > 20
-    len_mask = (
-        df["CARRIER_UPC"].notna()
-        & (df["CARRIER_UPC"] != "")
-        & (df["CARRIER_UPC"].str.len() > 20)
-    )
-    if len_mask.any():
-        idxs = df.index[len_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "CARRIER_UPC must be at most 20 digits for row(s): "
-            + ", ".join(map(str, human_rows))
-            + "."
-        )
+    # Null / NaN handling
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
 
-    # Reject legacy placeholder
-    placeholder_mask = df["CARRIER_UPC"] == "999999999999"
-    if placeholder_mask.any():
-        idxs = df.index[placeholder_mask].tolist()
-        human_rows = [i + 2 for i in idxs]
-        errors.append(
-            "Placeholder CARRIER_UPC '999999999999' is not allowed for row(s): "
-            + ", ".join(map(str, human_rows))
-            + ". Please use real UPCs."
-        )
+    # Handle pure integers
+    if isinstance(value, int):
+        s = str(value)
 
-    return df, errors
+    # Handle floats (Excel numbers come in as floats)
+    elif isinstance(value, float):
+        # Convert float → int safely (prevents trailing ".0" problems)
+        try:
+            s = str(int(round(value)))
+        except Exception:
+            # fallback — only used if something truly strange comes in
+            s = str(value)
+
+    # Handle everything else as a string
+    else:
+        s = str(value).strip()
+
+    if not s or s.lower() in ("nan", "none"):
+        return None
+
+    # Keep digits only
+    digits_only = "".join(ch for ch in s if ch.isdigit())
+
+    return digits_only or None
+
 
 
 # =============================================================================

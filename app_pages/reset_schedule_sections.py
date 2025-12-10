@@ -122,7 +122,7 @@ def render_reset_schedule_uploader_section():
         try:
             df = pd.read_excel(uploaded_file, engine="openpyxl")
             st.write("Preview of formatted reset schedule:")
-            st.dataframe(df.head(), use_container_width=True)
+            st.dataframe(df.head(), width='stretch')
 
             if st.button("Upload Reset Schedule to Tables", key="upload_reset_schedule_btn"):
                 with st.spinner("Uploading to Tables..."):

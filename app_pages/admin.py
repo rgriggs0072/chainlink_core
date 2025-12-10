@@ -470,7 +470,7 @@ def render():
 
         if "reset_logs_result" in st.session_state:
             st.caption("Most recent first.")
-            st.dataframe(st.session_state["reset_logs_result"], use_container_width=True)
+            st.dataframe(st.session_state["reset_logs_result"], width='stretch')
 
 
 
@@ -502,7 +502,7 @@ def render():
 
         if "failed_logs_result" in st.session_state:
             st.caption("Most recent failures first.")
-            st.dataframe(st.session_state["failed_logs_result"], use_container_width=True)
+            st.dataframe(st.session_state["failed_logs_result"], width='stretch')
 
 
 
