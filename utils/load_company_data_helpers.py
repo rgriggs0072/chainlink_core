@@ -40,6 +40,35 @@ from utils.class_validation_helpers import (
 # 🔧 LEGACY FORMATTERS (Excel / openpyxl)
 # =============================================================================
 
+def remove_total_rows_worksheet(ws):
+    """
+    Remove any rows where column A contains the word 'TOTAL'
+    (case-insensitive, trims whitespace).
+
+    This operates in-place on an openpyxl worksheet.
+    """
+    rows_to_delete = []
+
+    # Start at row 2 to avoid nuking the header row
+    for row_idx in range(2, ws.max_row + 1):
+        cell = ws.cell(row=row_idx, column=1)  # column A
+        val = cell.value
+        if val is None:
+            continue
+
+        text = str(val).strip().upper()
+
+        # Be forgiving: match anything that starts with or equals TOTAL
+        if text == "TOTAL" or text.startswith("TOTAL"):
+            rows_to_delete.append(row_idx)
+
+    # Delete from bottom up so indices don't shift
+    for r in sorted(rows_to_delete, reverse=True):
+        ws.delete_rows(r, 1)
+
+
+
+
 
 def format_sales_report(workbook):
     """
@@ -106,7 +135,7 @@ def format_sales_report(workbook):
             ws.delete_cols(8)
 
         # --- Normalize UPC: digits-only in column F ---
-        for cell in ws["F"][1:]:  # skip header
+        for cell in ws["F"][2:]:  # skip header
             val = cell.value
             if val is None:
                 continue
@@ -129,15 +158,8 @@ def format_sales_report(workbook):
             except Exception:
                 cell.value = 0
 
-        # Force integer formatting (no decimals)
-        for cell in ws["G"][1:]:  # includes header row if needed
-            try:
-                cell.number_format = "0"  # no decimals
-            except Exception:
-                pass
-
         # --- Clean STORE_NAME (col B): drop " #XXXX" suffix, clean punctuation ---
-        for cell in ws["B"][1:]:
+        for cell in ws["B"][2:]:
             if isinstance(cell.value, str):
                 raw = cell.value.strip()
                 if "#" in raw:
@@ -152,7 +174,7 @@ def format_sales_report(workbook):
 
         # --- Clean other text columns (ADDRESS, SALESPERSON, PRODUCT_NAME) ---
         for col_letter in ["C", "D", "E"]:
-            for cell in ws[col_letter][1:]:
+            for cell in ws[col_letter][2:]:
                 if isinstance(cell.value, str):
                     cell.value = (
                         cell.value.replace(",", " ")
@@ -161,11 +183,40 @@ def format_sales_report(workbook):
                         .strip()
                     )
 
+        # ------------------------------------------------------------------
+        # FINAL SAFETY: rebuild the sheet via pandas and drop the TOTAL row
+        # ------------------------------------------------------------------
+        data = list(ws.values)
+        if not data:
+            return workbook
+
+        header_row = data[0]
+        body_rows = data[1:]
+
+        # Build DataFrame from current sheet contents
+        df = pd.DataFrame(body_rows, columns=header_row)
+
+        # Remove any row where STORE_NUMBER is 'TOTAL' (case-insensitive)
+        if "STORE_NUMBER" in df.columns:
+            mask = ~df["STORE_NUMBER"].astype(str).str.strip().str.upper().eq("TOTAL")
+            df = df[mask].reset_index(drop=True)
+
+        # Clear the worksheet and write back the cleaned data
+        ws.delete_rows(1, ws.max_row)
+
+        # Write headers
+        ws.append(list(df.columns))
+
+        # Write rows
+        for row in df.itertuples(index=False, name=None):
+            ws.append(list(row))
+
         return workbook
 
     except Exception as e:
         st.error(f"Error formatting sales report: {str(e)}")
         return None
+
 
 
 def format_customers_report(workbook):

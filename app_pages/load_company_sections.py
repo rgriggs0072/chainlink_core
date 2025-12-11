@@ -43,6 +43,9 @@ import inspect
 # )
 
 
+
+
+
 # ------------------- SALES -------------------
 def render_sales_section():
     """
@@ -62,6 +65,8 @@ def render_sales_section():
         "Use the template-based flow below to ensure clean, repeatable uploads "
         "for the multi-tenant app."
     )
+
+
 
         # --- Template download ---
     template_df = generate_sales_template()
@@ -100,6 +105,7 @@ def render_sales_section():
     )
 
     cleaned_df = None
+  
 
     if uploaded is not None:
         # --- Step 1: Load raw file ---
@@ -198,7 +204,7 @@ def render_sales_section():
             type=["xlsx"],
             key="sales_upload_legacy",
         )
-
+    
         if legacy_file:
             try:
                 wb = openpyxl.load_workbook(legacy_file)
