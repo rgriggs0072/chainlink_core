@@ -422,7 +422,6 @@ def render_customers_section():
 
 
 # ------------------- PRODUCTS -------------------
-# ------------------- PRODUCTS -------------------
 def render_products_section():
     """
     Products Upload / Validation Section

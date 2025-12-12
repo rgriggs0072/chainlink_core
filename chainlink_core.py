@@ -335,6 +335,7 @@ def main():
             route = {
                 "Gap Report": "app_pages.gap_report",
                 "Email Gap Report": "app_pages.email_gap_report",
+                "Gap History": "app_pages.gap_history",
                 "Data Exports": "app_pages.data_exports",
                 
             }.get(report_page)

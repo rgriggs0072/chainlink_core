@@ -516,15 +516,18 @@ def build_gap_streaks_pdf(
     as_of_date: Optional[datetime] = None,
 ) -> bytes:
     """
-    Build a Gap Streaks PDF with a compact landscape table.
-
-    Columns shown in the PDF (CHAIN_NAME intentionally omitted to save space):
-        Salesperson, Store #, Store, Supplier, Product, Wks, First gap, Last gap
-
-    Color coding by streak length:
+    Build a Gap Streaks PDF with:
+    - One compact table (landscape) summarizing current gap streaks.
+    - Narrow STREAK_WEEKS column (single digit / small number).
+    - Color-coded rows by streak length:
         2 weeks  -> soft yellow
         3 weeks  -> soft orange
         4+ weeks -> soft red
+
+    Expected df columns (caller should already slim the DataFrame):
+        SALESPERSON_NAME, CHAIN_NAME, STORE_NUMBER, STORE_NAME,
+        SUPPLIER_NAME, PRODUCT_NAME, STREAK_WEEKS,
+        FIRST_GAP_WEEK, LAST_GAP_WEEK
     """
     if not _HAS_REPORTLAB:
         txt = (
@@ -572,9 +575,9 @@ def build_gap_streaks_pdf(
     # ------------------------------------------------------------------
     # Table data prep
     # ------------------------------------------------------------------
-    # 👉 NOTE: CHAIN_NAME is intentionally NOT included
     cols = [
         "SALESPERSON_NAME",
+        "CHAIN_NAME",
         "STORE_NUMBER",
         "STORE_NAME",
         "SUPPLIER_NAME",
@@ -592,45 +595,34 @@ def build_gap_streaks_pdf(
         if date_col in df_display.columns:
             df_display[date_col] = df_display[date_col].astype(str)
 
-    # Sort: salesperson → longest streaks first → store → product
-    sort_cols = [c for c in ["SALESPERSON_NAME", "STREAK_WEEKS", "STORE_NAME"] if c in df_display.columns]
+    # Stable sort: salesperson -> chain -> longest streak first
+    sort_cols = [c for c in ["SALESPERSON_NAME", "CHAIN_NAME", "STREAK_WEEKS"] if c in df_display.columns]
     if sort_cols:
-        ascending = [True, False, True][: len(sort_cols)]
+        ascending = [True, True, False][: len(sort_cols)]
         df_display = df_display.sort_values(sort_cols, ascending=ascending)
 
+    # Build data rows
     data: list[list[str]] = []
-
-    # Short, readable headers
-    header_labels_map = {
-        "SALESPERSON_NAME": "Salesperson",
-        "STORE_NUMBER": "Store #",
-        "STORE_NAME": "Store",
-        "SUPPLIER_NAME": "Supplier",
-        "PRODUCT_NAME": "Product",
-        "STREAK_WEEKS": "Wks",
-        "FIRST_GAP_WEEK": "First gap",
-        "LAST_GAP_WEEK": "Last gap",
-    }
-    header_row = [header_labels_map.get(col, col) for col in cols]
+    header_row = [col.replace("_", " ") for col in cols]
     data.append(header_row)
 
-    # Body rows
     for _, row in df_display[cols].iterrows():
         data.append([str(row[c]) if pd.notna(row[c]) else "" for c in cols])
 
     # ------------------------------------------------------------------
-    # Column widths – tuned to avoid overlap (total ~700pt)
+    # Column widths (STREAK_WEEKS intentionally narrow)
     # ------------------------------------------------------------------
-    # Salesperson, Store #, Store, Supplier, Product, Wks, First, Last
+    # SALESPERSON, CHAIN, STORE #, STORE, SUPPLIER, PRODUCT, STREAK, FIRST, LAST
     col_widths = [
-        90,   # Salesperson
-        30,   # Store #
-        60,   # Store
-        150,   # Supplier
-        230,  # Product (largest, to avoid wrapping over Supplier)
-        35,   # Wks (tiny)
-        55,   # First gap
-        55,   # Last gap
+        90,   # SALESPERSON_NAME
+        80,   # CHAIN_NAME
+        45,   # STORE_NUMBER
+        100,  # STORE_NAME
+        100,  # SUPPLIER_NAME
+        230,  # PRODUCT_NAME (largest)
+        40,   # STREAK_WEEKS (narrow)
+        70,   # FIRST_GAP_WEEK
+        70,   # LAST_GAP_WEEK
     ][: len(cols)]
 
     table = Table(data, colWidths=col_widths, repeatRows=1)
@@ -640,15 +632,15 @@ def build_gap_streaks_pdf(
     # ------------------------------------------------------------------
     style_commands: list[tuple] = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),   # header
-        ("FONTSIZE", (0, 1), (-1, -1), 7),  # body
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(PRIMARY_HEX)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (1, 1), (1, -1), "CENTER"),  # Store #
-        ("ALIGN", (5, 1), (5, -1), "CENTER"),  # Wks
+        ("ALIGN", (2, 1), (2, -1), "CENTER"),  # STORE_NUMBER
+        ("ALIGN", (6, 1), (6, -1), "CENTER"),  # STREAK_WEEKS
     ]
 
     # Streak color coding

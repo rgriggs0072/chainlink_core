@@ -1,0 +1,183 @@
+﻿# utils/gap_history_helpers.py
+from typing import Optional
+import pandas as pd
+from snowflake.connector.pandas_tools import write_pandas
+
+
+def get_week_start(d: pd.Timestamp) -> pd.Timestamp:
+    """
+    Normalize any given date to the Monday of that ISO week.
+    Used to make weekly snapshots consistent.
+    """
+    return (d - pd.Timedelta(days=d.weekday())).normalize()
+
+
+def save_gap_snapshot(
+    conn,
+    tenant_id: int,
+    df_gaps: pd.DataFrame,
+    snapshot_week_start: Optional[pd.Timestamp] = None,
+    triggered_by: Optional[str] = None,
+) -> bool:
+    """
+    Persist a weekly gap snapshot into:
+      - GAP_REPORT_RUNS (header row)
+      - GAP_REPORT_SNAPSHOT (detail rows)
+
+    Parameters
+    ----------
+    conn : snowflake.connector.connection.SnowflakeConnection
+        Active Snowflake connection scoped to the tenant DB/SCHEMA.
+    tenant_id : int
+        Tenant identifier.
+    df_gaps : pd.DataFrame
+        Pre-shaped DataFrame containing gap rows with columns such as:
+        CHAIN_NAME, STORE_NUMBER, STORE_NAME, SALESPERSON_NAME,
+        SUPPLIER_NAME, PRODUCT_NAME, UPC, SR_UPC, IN_SCHEMATIC, IS_GAP,
+        CATEGORY, SUBCATEGORY, GAP_CASES, LAST_PURCHASE_DATE.
+    snapshot_week_start : pd.Timestamp, optional
+        Week start date. If None, uses "this week" based on UTC today.
+    triggered_by : str, optional
+        Who triggered this snapshot (user email, username, etc.).
+
+    Returns
+    -------
+    bool
+        True if snapshot was inserted, False if skipped (no data, or
+        run already existed, or write_pandas reported failure).
+    """
+    # 0) Early exit if nothing to save
+    if df_gaps is None or df_gaps.empty:
+        return False
+
+    # 1) Determine week start (as Python date)
+    if snapshot_week_start is None:
+        today = pd.Timestamp.utcnow().normalize()
+        snapshot_week_start = get_week_start(today)
+
+    if isinstance(snapshot_week_start, pd.Timestamp):
+        snapshot_week_start_param = snapshot_week_start.to_pydatetime().date()
+    else:
+        snapshot_week_start_param = snapshot_week_start  # assume date/datetime
+
+    cur = conn.cursor()
+    try:
+        # 2) Check if a run already exists for this tenant + week
+        check_sql = """
+            SELECT RUN_ID
+            FROM GAP_REPORT_RUNS
+            WHERE TENANT_ID = %s
+              AND SNAPSHOT_WEEK_START = %s
+            LIMIT 1
+        """
+        cur.execute(check_sql, (tenant_id, snapshot_week_start_param))
+        row = cur.fetchone()
+        if row is not None:
+            # First-run-only rule: don't overwrite history
+            return False
+
+        # 3) Insert header row into GAP_REPORT_RUNS
+        row_count = int(len(df_gaps))
+        insert_run_sql = """
+            INSERT INTO GAP_REPORT_RUNS
+                (TENANT_ID, SNAPSHOT_WEEK_START, TRIGGERED_BY, ROW_COUNT)
+            VALUES (%s, %s, %s, %s)
+        """
+        cur.execute(
+            insert_run_sql,
+            (tenant_id, snapshot_week_start_param, triggered_by, row_count),
+        )
+
+        # Re-fetch RUN_ID (unique per TENANT_ID + SNAPSHOT_WEEK_START)
+        cur.execute(
+            """
+            SELECT RUN_ID
+            FROM GAP_REPORT_RUNS
+            WHERE TENANT_ID = %s
+              AND SNAPSHOT_WEEK_START = %s
+            LIMIT 1
+            """,
+            (tenant_id, snapshot_week_start_param),
+        )
+        run_row = cur.fetchone()
+        if not run_row:
+            return False
+
+        run_id = run_row[0]
+
+    finally:
+        cur.close()
+
+    # 4) Prepare DataFrame for GAP_REPORT_SNAPSHOT
+    df_to_save = df_gaps.copy()
+
+    # Add required context columns
+    df_to_save["TENANT_ID"] = tenant_id
+    df_to_save["SNAPSHOT_WEEK_START"] = snapshot_week_start_param
+    df_to_save["RUN_ID"] = run_id
+
+    # Columns in the snapshot table; we slice to the ones that exist
+    snapshot_cols = [
+        "TENANT_ID",
+        "SNAPSHOT_WEEK_START",
+        "RUN_ID",
+        "SALESPERSON_ID",
+        "SALESPERSON_NAME",
+        "MANAGER_ID",
+        "MANAGER_NAME",
+        "CHAIN_NAME",
+        "STORE_NUMBER",
+        "STORE_NAME",
+        "PRODUCT_ID",
+        "UPC",
+        "SR_UPC",
+        "PRODUCT_NAME",
+        "SUPPLIER_NAME",
+        "CATEGORY",
+        "SUBCATEGORY",
+        "GAP_CASES",
+        "IN_SCHEMATIC",
+        "IS_GAP",
+        "LAST_PURCHASE_DATE",
+    ]
+
+    # Keep only columns that exist in df_to_save
+    existing_cols = [c for c in snapshot_cols if c in df_to_save.columns]
+    df_to_save = df_to_save[existing_cols]
+
+    # Normalize UPC if present
+    if "UPC" in df_to_save.columns:
+        df_to_save["UPC"] = df_to_save["UPC"].astype(str).str.strip()
+        df_to_save.loc[df_to_save["UPC"] == "", "UPC"] = None
+
+    # Normalize BOOLEAN columns to real Python bools
+    bool_cols = []
+    for col in ["IN_SCHEMATIC", "IS_GAP"]:
+        if col in df_to_save.columns:
+            bool_cols.append(col)
+
+    for col in bool_cols:
+        df_to_save[col] = df_to_save[col].map(
+            {
+                1: True,
+                0: False,
+                "1": True,
+                "0": False,
+                True: True,
+                False: False,
+            }
+        )
+
+    # If everything somehow vanished, do nothing
+    if df_to_save.empty:
+        return False
+
+    # 5) Bulk insert into GAP_REPORT_SNAPSHOT
+    success, nchunks, nrows, _ = write_pandas(
+        conn,
+        df_to_save,
+        "GAP_REPORT_SNAPSHOT",
+        quote_identifiers=False,
+    )
+
+    return bool(success)

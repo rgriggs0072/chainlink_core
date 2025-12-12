@@ -45,7 +45,7 @@ def create_gap_report(conn, salesperson, chain, supplier):
         filters.append(f"SUPPLIER = '{supplier}'")
 
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-    st.write("what the heck is the where clause", where_clause)
+    #st.write("what the heck is the where clause", where_clause)
     query = f"SELECT * FROM GAP_REPORT {where_clause}"
 
     df = pd.read_sql(query, conn)

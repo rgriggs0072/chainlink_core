@@ -625,8 +625,8 @@ def build_gap_streaks_pdf(
     col_widths = [
         90,   # Salesperson
         30,   # Store #
-        60,   # Store
-        150,   # Supplier
+        700,   # Store
+        90,   # Supplier
         230,  # Product (largest, to avoid wrapping over Supplier)
         35,   # Wks (tiny)
         55,   # First gap

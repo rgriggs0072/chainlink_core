@@ -255,6 +255,6 @@ def render():
             if logs.empty:
                 st.info("No reset logs found for this tenant.")
             else:
-                st.dataframe(logs, use_container_width=True)
+                st.dataframe(logs, width='stretch')
         else:
             st.error("Failed to connect to the database.")
