@@ -32,6 +32,7 @@
     <Compile Include="app_pages\distro_grid_sections.py" />
     <Compile Include="app_pages\driver_forecast.py" />
     <Compile Include="app_pages\email_gap_report.py" />
+    <Compile Include="app_pages\gap_history.py" />
     <Compile Include="app_pages\gap_report.py" />
     <Compile Include="app_pages\home.py" />
     <Compile Include="app_pages\import_distributor_report.py" />
@@ -69,6 +70,7 @@
     <Compile Include="utils\email_utils.py" />
     <Compile Include="utils\forecasting.py" />
     <Compile Include="utils\forecasting_truck.py" />
+    <Compile Include="utils\gap_history_helpers.py" />
     <Compile Include="utils\home_ui_helpers.py" />
     <Compile Include="utils\load_company_data_helpers.py" />
     <Compile Include="utils\logout_utils.py" />

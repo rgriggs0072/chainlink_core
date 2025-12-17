@@ -240,20 +240,20 @@ def render():
     # Compute max streak length present in the data
     max_streak = int(df["STREAK_WEEKS"].max() or 1)
 
+    # ✅ Always default to 1 so "All" truly shows ALL gaps (including 1-week gaps)
+    min_streak = st.slider(
+        "Minimum streak length (weeks)",
+        min_value=1,
+        max_value=max_streak,
+        value=1,
+        help="Show items that have been gaps for at least this many consecutive weeks.",
+    )
+
+    # Optional: keep the helpful caption when history is only 1 week
     if max_streak <= 1:
-        # Only one week of history -> all streaks are 1 week
         st.caption(
             "Only one week of gap history so far — showing all current gaps "
             "(streak length = 1 week)."
-        )
-        min_streak = 1
-    else:
-        min_streak = st.slider(
-            "Minimum streak length (weeks)",
-            min_value=1,
-            max_value=max_streak,
-            value=2,
-            help="Show items that have been gaps for at least this many consecutive weeks.",
         )
 
     # ------------------------------------------------------------------
@@ -270,6 +270,7 @@ def render():
     if supplier_filter != "All":
         filtered = filtered[filtered["SUPPLIER_NAME"] == supplier_filter]
 
+    # ✅ Apply min streak filter AFTER other filters
     filtered = filtered[filtered["STREAK_WEEKS"] >= min_streak]
 
     if filtered.empty:
@@ -278,6 +279,7 @@ def render():
 
     # Assign color labels per streak length
     filtered["_STREAK_COLOR"] = filtered["STREAK_WEEKS"].apply(_assign_streak_color)
+
 
     # ------------------------------------------------------------------
     # Display table (salesperson-first)

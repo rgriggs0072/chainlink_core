@@ -1,6 +1,5 @@
 ﻿# ------------------------- EMAIL GAP REPORT PAGE -------------------------
 
-
 """
 Email Gap Report (per-salesperson, email-ready)
 
@@ -35,6 +34,7 @@ Phase 2 additions
 """
 
 from __future__ import annotations
+
 import io
 import zipfile
 from datetime import datetime
@@ -48,19 +48,15 @@ from utils.email_gap_utils import send_all_gap_emails
 PAGE_TITLE = "Email Gap Report"
 TARGET_EXECUTION = 0.90  # 90% goal
 
+
 # -------------------------------
 # Session keys for this page
 # -------------------------------
 DEFAULT_KEYS = {
-    "egp_filters": None,        # last executed filters snapshot
-    "egp_results": None,        # {
-                                #   "html_by_salesperson": dict,
-                                #   "first_sp": str,
-                                #   "manager_html_by_manager": dict,
-                                #   "first_manager": str | None,
-                                #   "manager_contacts": list[dict]
-                                # }
-    "egp_filters_hash": None,   # stable, order-insensitive hash of filters
+    "egp_filters": None,
+    "egp_results": None,
+    "egp_filters_hash": None,
+    "egp_selected_sp": None,  # NEW: persist the selected preview salesperson
 }
 for k, v in DEFAULT_KEYS.items():
     if k not in st.session_state:
@@ -86,6 +82,30 @@ def _filters_hash(chains: List[str], suppliers: List[str], salespeople: List[str
         tuple(sorted(suppliers or [])),
         tuple(sorted(salespeople or [])),
     )
+
+
+def _safe_label(name: str) -> str:
+    """Filesystem-safe label for filenames."""
+    return str(name).replace("/", "-").replace("\\", "-").strip()
+
+
+def build_zip(html_map: Dict[str, str], suffix: str) -> bytes:
+    """
+    Bundle {key: html} as a ZIP.
+
+    Parameters
+    ----------
+    html_map:
+        Dictionary of {label: html_string}.
+    suffix:
+        String suffix for filenames, e.g. 'gap_email' or 'manager_summary'.
+    """
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
+        for label, html in html_map.items():
+            safe = _safe_label(label)
+            zf.writestr(f"{safe}_{suffix}.html", html)
+    return bio.getvalue()
 
 
 # -------------------------------------------------------
@@ -204,14 +224,12 @@ def load_sales_contacts(con, tenant_id: int) -> pd.DataFrame:
         )
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
+
     if not rows:
         return pd.DataFrame(columns=cols)
-    df = pd.DataFrame(rows, columns=cols)
 
-    # Normalize for matching
-    df["SALESPERSON_NAME_UPPER"] = (
-        df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
-    )
+    df = pd.DataFrame(rows, columns=cols)
+    df["SALESPERSON_NAME_UPPER"] = df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
     return df
 
 
@@ -260,16 +278,6 @@ def compute_salesperson_metrics(df_sp: pd.DataFrame) -> dict:
 def render_email_html(salesperson: str, metrics: dict, gaps_df: pd.DataFrame) -> str:
     """
     Generate inline-CSS HTML email body listing only gap rows for a salesperson.
-
-    Visual cue on "% EXECUTION":
-    - < 80%  -> red background
-    - 80–85% -> orange background
-    - 85–90% -> yellow background
-    - ≥ 90%  -> green background
-
-    NOTE:
-    - SALESPERSON column is intentionally *not* shown in the detail table.
-      The salesperson name already appears in the summary header row.
     """
     style = """
     <style>
@@ -287,30 +295,15 @@ def render_email_html(salesperson: str, metrics: dict, gaps_df: pd.DataFrame) ->
     """
     m = metrics
 
-    # --- Color logic for "% EXECUTION" based on execution_pct ---
     exec_pct_val = float(m.get("execution_pct", 0.0)) * 100.0
-    exec_style = ""
-
     if exec_pct_val < 80.0:
-        # RED: Critical
-        exec_style = (
-            ' style="background-color:#fdecea; color:#b00020; font-weight:700;"'
-        )
+        exec_style = ' style="background-color:#fdecea; color:#b00020; font-weight:700;"'
     elif 80.0 <= exec_pct_val < 85.0:
-        # ORANGE: Needs attention
-        exec_style = (
-            ' style="background-color:#fff3e0; color:#e65100; font-weight:700;"'
-        )
+        exec_style = ' style="background-color:#fff3e0; color:#e65100; font-weight:700;"'
     elif 85.0 <= exec_pct_val < 90.0:
-        # YELLOW: Almost there
-        exec_style = (
-            ' style="background-color:#fffde7; color:#8c6d1f; font-weight:700;"'
-        )
+        exec_style = ' style="background-color:#fffde7; color:#8c6d1f; font-weight:700;"'
     else:
-        # GREEN: On target (≥ 90)
-        exec_style = (
-            ' style="background-color:#e8f5e9; color:#1b5e20; font-weight:700;"'
-        )
+        exec_style = ' style="background-color:#e8f5e9; color:#1b5e20; font-weight:700;"'
 
     summary_html = f"""
     <table class="summary">
@@ -330,7 +323,6 @@ def render_email_html(salesperson: str, metrics: dict, gaps_df: pd.DataFrame) ->
     </table>
     """
 
-    # Original order, but SALESPERSON removed so it does not render as a column
     ordered_cols = [
         "RESET_DATES",
         "RESET_TIME",
@@ -345,7 +337,7 @@ def render_email_html(salesperson: str, metrics: dict, gaps_df: pd.DataFrame) ->
         "dg_upc",
         "sr_upc",
         "PURCHASED_YES_NO",
-]
+    ]
 
     display_names = {
         "RESET_DATES": "Reset Date",
@@ -361,14 +353,12 @@ def render_email_html(salesperson: str, metrics: dict, gaps_df: pd.DataFrame) ->
         "dg_upc": "Distribution UPC",
         "sr_upc": "Sales Report UPC",
         "PURCHASED_YES_NO": "Purchased?",
-}
-
+    }
 
     show_cols = [c for c in ordered_cols if c in gaps_df.columns]
     remaining = gaps_df[show_cols].copy()
 
-    head_html = "".join(
-    f"<th>{display_names.get(col, col)}</th>" for col in remaining.columns)
+    head_html = "".join(f"<th>{display_names.get(col, col)}</th>" for col in remaining.columns)
     body_rows = []
     for _, row in remaining.iterrows():
         tds = "".join(f"<td>{'' if pd.isna(v) else v}</td>" for v in row.values)
@@ -403,45 +393,23 @@ def build_manager_summaries(
     metrics_by_salesperson: Dict[str, dict],
     contacts_df: pd.DataFrame,
 ) -> tuple[Dict[str, str], List[dict]]:
-    """
-    Build manager-level summary HTML, grouped by MANAGER_NAME.
-
-    Parameters
-    ----------
-    metrics_by_salesperson:
-        Dict of {salesperson_name: metrics_dict}.
-    contacts_df:
-        SALES_CONTACTS dataframe with normalized SALESPERSON_NAME_UPPER.
-
-    Returns
-    -------
-    (manager_html_by_manager, manager_contacts)
-        manager_html_by_manager: dict[manager_name -> HTML string]
-        manager_contacts: list of dicts with manager_name / manager_email
-    """
+    """Build manager-level summary HTML, grouped by MANAGER_NAME."""
     if contacts_df.empty or not metrics_by_salesperson:
         return {}, []
 
-    # Build mapping from salesperson (UPPER) -> contact row
     contacts_df = contacts_df.copy()
-    contacts_df["SALESPERSON_NAME_UPPER"] = (
-        contacts_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
-    )
+    contacts_df["SALESPERSON_NAME_UPPER"] = contacts_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
 
     contact_lookup = (
         contacts_df.drop_duplicates(subset=["SALESPERSON_NAME_UPPER"])
         .set_index("SALESPERSON_NAME_UPPER")
     )
 
-    # Accumulate rows per manager
     manager_rows: Dict[str, List[tuple[str, dict]]] = {}
-
     for sp_name, metrics in metrics_by_salesperson.items():
         sp_key = str(sp_name).strip().upper()
         if sp_key not in contact_lookup.index:
-            # No contact mapping for this salesperson; skip manager summary
             continue
-
         row = contact_lookup.loc[sp_key]
         manager_name = row.get("MANAGER_NAME") or "Unknown Manager"
         manager_rows.setdefault(manager_name, []).append((sp_name, metrics))
@@ -449,7 +417,6 @@ def build_manager_summaries(
     manager_html_by_manager: Dict[str, str] = {}
     manager_contacts: List[dict] = []
 
-    # Inline style for manager summary table (reuse look from salesperson summary)
     table_style = """
     <style>
       .wrap { font-family: Arial, Helvetica, sans-serif; color: #111; }
@@ -462,56 +429,38 @@ def build_manager_summaries(
     """
 
     for manager_name, rows in manager_rows.items():
-        # Manager email (take first matching row)
         subset = contacts_df[
             contacts_df["MANAGER_NAME"].astype(str).str.strip() == str(manager_name).strip()
         ]
-        manager_email = None
-        if not subset.empty:
-            manager_email = subset["MANAGER_EMAIL"].iloc[0]
+        manager_email = subset["MANAGER_EMAIL"].iloc[0] if not subset.empty else None
 
-        manager_contacts.append(
-            {
-                "manager_name": manager_name,
-                "manager_email": manager_email,
-            }
-        )
+        manager_contacts.append({"manager_name": manager_name, "manager_email": manager_email})
 
-        # Build rows for this manager's table
         body_rows = []
         for sp_name, m in rows:
             exec_pct_val = float(m.get("execution_pct", 0.0)) * 100.0
-
-            # Reuse same color logic for % EXECUTION
             if exec_pct_val < 80.0:
-                exec_style = (
-                    ' style="background-color:#fdecea; color:#b00020; font-weight:700;"'
-                )
+                exec_style = ' style="background-color:#fdecea; color:#b00020; font-weight:700;"'
             elif 80.0 <= exec_pct_val < 85.0:
-                exec_style = (
-                    ' style="background-color:#fff3e0; color:#e65100; font-weight:700;"'
-                )
+                exec_style = ' style="background-color:#fff3e0; color:#e65100; font-weight:700;"'
             elif 85.0 <= exec_pct_val < 90.0:
-                exec_style = (
-                    ' style="background-color:#fffde7; color:#8c6d1f; font-weight:700;"'
-                )
+                exec_style = ' style="background-color:#fffde7; color:#8c6d1f; font-weight:700;"'
             else:
-                exec_style = (
-                    ' style="background-color:#e8f5e9; color:#1b5e20; font-weight:700;"'
-                )
+                exec_style = ' style="background-color:#e8f5e9; color:#1b5e20; font-weight:700;"'
 
-            row_html = f"""
-            <tr>
-              <td>{sp_name}</td>
-              <td>{m['in_schematic']}</td>
-              <td>{m['fulfilled']}</td>
-              <td>{m['gaps']}</td>
-              <td>{m['target_at_90']:.1f}</td>
-              <td{exec_style}>{int(round(exec_pct_val, 0))}%</td>
-              <td>{m['gaps_away_90']:.1f}</td>
-            </tr>
-            """
-            body_rows.append(row_html)
+            body_rows.append(
+                f"""
+                <tr>
+                  <td>{sp_name}</td>
+                  <td>{m['in_schematic']}</td>
+                  <td>{m['fulfilled']}</td>
+                  <td>{m['gaps']}</td>
+                  <td>{m['target_at_90']:.1f}</td>
+                  <td{exec_style}>{int(round(exec_pct_val, 0))}%</td>
+                  <td>{m['gaps_away_90']:.1f}</td>
+                </tr>
+                """
+            )
 
         summary_html = f"""
         <table class="summary">
@@ -532,9 +481,7 @@ def build_manager_summaries(
         <div class="wrap">
           <div class="title">Weekly Execution Summary – {manager_name}</div>
           {summary_html}
-          <div class="muted">
-            Generated {datetime.now().strftime("%Y-%m-%d %H:%M")}
-          </div>
+          <div class="muted">Generated {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
         </div>
         """
 
@@ -546,28 +493,6 @@ def build_manager_summaries(
 
 
 # -------------------------------------------------------
-# Utility
-# -------------------------------------------------------
-def build_zip(html_map: Dict[str, str], suffix: str) -> bytes:
-    """
-    Bundle {key: html} as a ZIP.
-
-    Parameters
-    ----------
-    html_map:
-        Dictionary of {label: html_string}.
-    suffix:
-        String suffix for filenames, e.g. 'gap_email' or 'manager_summary'.
-    """
-    bio = io.BytesIO()
-    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
-        for label, html in html_map.items():
-            safe = label.replace("/", "-").replace("\\", "-")
-            zf.writestr(f"{safe}_{suffix}.html", html)
-    return bio.getvalue()
-
-
-# -------------------------------------------------------
 # Page
 # -------------------------------------------------------
 def render():
@@ -576,7 +501,10 @@ def render():
     - Wrap filters in a form (no reruns while editing)
     - Only compute when submitted filters actually change
     - Persist results in session_state to avoid recompute on minor UI events
-    - Phase 2: adds email send button that uses the existing html_by_salesperson.
+    - Adds:
+        * preview selector
+        * send selected-only button
+        * send all + managers button
     """
     st.title(PAGE_TITLE)
 
@@ -593,32 +521,21 @@ def render():
         chains = c1.multiselect("Chains", dims["chains"], placeholder="All", key="egp_chains")
         suppliers = c2.multiselect("Suppliers", dims["suppliers"], placeholder="All", key="egp_suppliers")
         salespeople = c3.multiselect("Salespeople", dims["salespeople"], placeholder="All", key="egp_salespeople")
-
         submitted = st.form_submit_button("Generate Emails")
 
     # -------- Execute once per submit when filters changed --------
     run_needed = False
     if submitted:
         new_hash = _filters_hash(chains, suppliers, salespeople)
-
-        # Safely get previous hash (None on first run / fresh session)
         old_hash = st.session_state.get("egp_filters_hash")
-
-        # First run OR filters changed -> recompute + cache
         if old_hash is None or new_hash != old_hash:
             st.session_state["egp_filters_hash"] = new_hash
-            st.session_state["egp_filters"] = {
-                "chains": chains,
-                "suppliers": suppliers,
-                "salespeople": salespeople,
-            }
+            st.session_state["egp_filters"] = {"chains": chains, "suppliers": suppliers, "salespeople": salespeople}
             run_needed = True
 
     if run_needed:
         with st.spinner("Building emails…"):
-            # 1) full data for metrics
             df_all = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=False)
-            # 2) true gaps for detail table
             df_gaps = fetch_gap_df(con, chains, suppliers, salespeople, only_gaps=True)
 
             if df_all.empty:
@@ -635,9 +552,10 @@ def render():
                     metrics_by_salesperson[sp] = metrics
                     html_by_salesperson[sp] = render_email_html(sp, metrics, sp_gaps)
 
+                # Default selection = first generated
                 first_sp = next(iter(html_by_salesperson))
+                st.session_state["egp_selected_sp"] = first_sp
 
-                # --- Manager summaries ---
                 tenant_id = st.session_state.get("tenant_id")
                 manager_html_by_manager = {}
                 manager_contacts: List[dict] = []
@@ -645,11 +563,9 @@ def render():
 
                 if tenant_id:
                     contacts_df = load_sales_contacts(con, tenant_id)
-                    (
-                        manager_html_by_manager,
-                        manager_contacts,
-                    ) = build_manager_summaries(metrics_by_salesperson, contacts_df)
-
+                    manager_html_by_manager, manager_contacts = build_manager_summaries(
+                        metrics_by_salesperson, contacts_df
+                    )
                     if manager_html_by_manager:
                         first_manager = next(iter(manager_html_by_manager.keys()))
 
@@ -663,108 +579,143 @@ def render():
 
     # -------- Render results from state (no recompute) --------
     res = st.session_state.get("egp_results")
-    if res:
-        html_by_salesperson = res["html_by_salesperson"]
-        first_sp = res["first_sp"]
-        manager_html_by_manager = res.get("manager_html_by_manager") or {}
-        first_manager = res.get("first_manager")
+    if not res:
+        return
 
-        st.markdown("### Salesperson Email Preview")
-        with st.expander(f"Preview: {first_sp}", expanded=True):
-            st.components.v1.html(html_by_salesperson[first_sp], height=600, scrolling=True)
+    html_by_salesperson = res["html_by_salesperson"]
+    manager_html_by_manager = res.get("manager_html_by_manager") or {}
+    first_manager = res.get("first_manager")
 
-        left, right, clear_col = st.columns([1, 1, 0.5])
-        safe_name = first_sp.replace("/", "-").replace("\\", "-")
-        left.download_button(
-            label=f"Download {first_sp} HTML",
-            file_name=f"{safe_name}_gap_email.html",
-            data=html_by_salesperson[first_sp],
-            mime="text/html",
-             width='stretch',
+    # ---- Preview selector ----
+    st.markdown("### Salesperson Email Preview")
+
+    sp_options = sorted(list(html_by_salesperson.keys()))
+    default_sp = st.session_state.get("egp_selected_sp") or sp_options[0]
+    if default_sp not in sp_options:
+        default_sp = sp_options[0]
+
+    selected_sp = st.selectbox(
+        "Preview salesperson",
+        options=sp_options,
+        index=sp_options.index(default_sp),
+        key="egp_preview_salesperson",
+    )
+    st.session_state["egp_selected_sp"] = selected_sp
+
+    with st.expander(f"Preview: {selected_sp}", expanded=True):
+        st.components.v1.html(html_by_salesperson[selected_sp], height=600, scrolling=True)
+
+    left, right, clear_col = st.columns([1, 1, 0.5])
+
+    safe_name = _safe_label(selected_sp)
+    left.download_button(
+        label=f"Download {selected_sp} HTML",
+        file_name=f"{safe_name}_gap_email.html",
+        data=html_by_salesperson[selected_sp],
+        mime="text/html",
+        width="stretch",
+    )
+
+    zip_bytes = build_zip(html_by_salesperson, suffix="gap_email")
+    right.download_button(
+        label=f"Download All ({len(html_by_salesperson)}) as ZIP",
+        file_name=f"gap_push_emails_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+        data=zip_bytes,
+        mime="application/zip",
+        width="stretch",
+    )
+
+    # -------- Send emails --------
+    st.markdown("---")
+    st.markdown("### Send Gap Report Emails")
+
+    tenant_id_for_send = (
+        st.session_state.get("tenant_id")
+        or st.session_state.get("tenant_config", {}).get("TENANT_ID")
+    )
+
+    if not tenant_id_for_send:
+        st.info(
+            "Tenant ID not found in session; email sending is disabled. "
+            "Ensure tenant_id or tenant_config is set on login."
         )
+    else:
+        sender_email = "randy@chainlinkanalytics.com"  # or pull from secrets
 
-        zip_bytes = build_zip(html_by_salesperson, suffix="gap_email")
-        right.download_button(
-            label=f"Download All ({len(html_by_salesperson)}) as ZIP",
-            file_name=f"gap_push_emails_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
-            data=zip_bytes,
-            mime="application/zip",
-             width='stretch',
-        )
+        send_col1, send_col2 = st.columns(2)
 
-        # -------- Send emails (Phase 2) --------
+        # ✅ Send ONLY selected salesperson
+        if send_col1.button(f"Send Email for {selected_sp} Only", type="primary"):
+            with st.spinner(f"Sending {selected_sp}…"):
+                summary = send_all_gap_emails(
+                    conn=con,
+                    tenant_id=int(tenant_id_for_send),
+                    html_by_salesperson={selected_sp: html_by_salesperson[selected_sp]},
+                    sender_email=sender_email,
+                    manager_html_by_manager={},  # don't send manager summaries for single-send
+                )
+
+            st.success(
+                f"Salespeople: {summary.get('salesperson_success', 0)} sent, "
+                f"{summary.get('salesperson_fail', 0)} failed."
+            )
+            skipped = summary.get("skipped_salespeople") or []
+            if skipped:
+                st.warning("No SALES_CONTACTS match for (skipped): " + ", ".join(skipped))
+
+        # ✅ Send ALL generated salespeople + managers
+        if send_col2.button("Send ALL Salespeople & Managers", type="secondary"):
+            with st.spinner("Sending all emails…"):
+                summary = send_all_gap_emails(
+                    conn=con,
+                    tenant_id=int(tenant_id_for_send),
+                    html_by_salesperson=html_by_salesperson,
+                    sender_email=sender_email,
+                    manager_html_by_manager=manager_html_by_manager,
+                )
+
+            st.success(
+                f"Salespeople: {summary.get('salesperson_success', 0)} sent, "
+                f"{summary.get('salesperson_fail', 0)} failed. "
+                f"Managers: {summary.get('manager_success', 0)} sent, "
+                f"{summary.get('manager_fail', 0)} failed."
+            )
+            skipped = summary.get("skipped_salespeople") or []
+            if skipped:
+                st.warning("No SALES_CONTACTS match for (skipped): " + ", ".join(skipped))
+
+    # -------- Manager summaries (optional preview/download) --------
+    if manager_html_by_manager and first_manager:
         st.markdown("---")
-        st.markdown("### Send Gap Report Emails")
+        st.markdown("### Manager Summary Preview")
 
-        tenant_id_for_send = (
-            st.session_state.get("tenant_id")
-            or st.session_state.get("tenant_config", {}).get("TENANT_ID")
+        with st.expander(f"Preview: {first_manager}", expanded=False):
+            st.components.v1.html(manager_html_by_manager[first_manager], height=400, scrolling=True)
+
+        m_left, m_right = st.columns(2)
+        safe_mgr = _safe_label(first_manager)
+        m_left.download_button(
+            label=f"Download {first_manager} Summary HTML",
+            file_name=f"{safe_mgr}_manager_summary.html",
+            data=manager_html_by_manager[first_manager],
+            mime="text/html",
+            width="stretch",
         )
 
-        if not tenant_id_for_send:
-            st.info(
-                "Tenant ID not found in session; email sending is disabled. "
-                "Ensure tenant_id or tenant_config is set on login."
-            )
-        else:
-            sender_email = "randy@chainlinkanalytics.com"  # or pull from secrets if you want
+        mgr_zip = build_zip(manager_html_by_manager, suffix="manager_summary")
+        m_right.download_button(
+            label=f"Download All Manager Summaries ({len(manager_html_by_manager)})",
+            file_name=f"manager_summaries_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+            data=mgr_zip,
+            mime="application/zip",
+            width="stretch",
+        )
 
-            if st.button("Send Gap Emails to Sales Team & Managers", type="primary"):
-                with st.spinner("Sending emails…"):
-                    summary = send_all_gap_emails(
-                        conn=con,
-                        tenant_id=int(tenant_id_for_send),
-                        html_by_salesperson=html_by_salesperson,
-                        sender_email=sender_email,
-                        manager_html_by_manager=manager_html_by_manager,
-                    )
-
-                st.success(
-                    f"Salespeople: {summary['salesperson_success']} sent, "
-                    f"{summary['salesperson_fail']} failed. "
-                    f"Managers: {summary['manager_success']} sent, "
-                    f"{summary['manager_fail']} failed."
-                )
-
-                if summary["skipped_salespeople"]:
-                    st.warning(
-                        "No SALES_CONTACTS match for these salespeople (skipped): "
-                        + ", ".join(summary["skipped_salespeople"])
-                    )
-
-        # -------- Manager summaries (if any) --------
-      
-        if manager_html_by_manager and first_manager:
-            st.markdown("---")
-            st.markdown("### Manager Summary Preview")
-
-            with st.expander(f"Preview: {first_manager}", expanded=False):
-                st.components.v1.html(
-                    manager_html_by_manager[first_manager], height=400, scrolling=True
-                )
-
-            m_left, m_right = st.columns(2)
-            safe_mgr = first_manager.replace("/", "-").replace("\\", "-")
-            m_left.download_button(
-                label=f"Download {first_manager} Summary HTML",
-                file_name=f"{safe_mgr}_manager_summary.html",
-                data=manager_html_by_manager[first_manager],
-                mime="text/html",
-                 width='stretch',
-            )
-
-            mgr_zip = build_zip(manager_html_by_manager, suffix="manager_summary")
-            m_right.download_button(
-                label=f"Download All Manager Summaries ({len(manager_html_by_manager)})",
-                file_name=f"manager_summaries_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
-                data=mgr_zip,
-                mime="application/zip",
-                width='stretch',
-            )
-
-        if clear_col.button("Clear",  width='stretch'):
-            st.session_state["egp_results"] = None
-            st.rerun()
+    # -------- Clear cached results --------
+    if clear_col.button("Clear", width="stretch"):
+        st.session_state["egp_results"] = None
+        st.session_state["egp_selected_sp"] = None
+        st.rerun()
 
 
 if __name__ == "__main__":
