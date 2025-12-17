@@ -1,30 +1,12 @@
 ﻿# utils/gap_history_helpers.py
-"""
-Gap History Helpers (Snapshots)
-
-Page overview for future devs:
-- This module writes weekly "gap snapshots" to two tables:
-    1) GAP_REPORT_RUNS      (one row per tenant/week)
-    2) GAP_REPORT_SNAPSHOT  (detail rows for that run)
-- IMPORTANT:
-    - Snapshots MUST store UPC and SR_UPC as DIGITS ONLY.
-    - Excel/pandas often introduces ".0" artifacts (e.g. '850017944176.0').
-    - We normalize UPC/SR_UPC immediately before write_pandas() so nothing
-      reintroduces bad formats after earlier transforms.
-"""
-
-from __future__ import annotations
-
-from typing import Optional, Union
-import numpy as np
+from typing import Optional
 import pandas as pd
+import pandas as pd
+import numpy as np
+
 from snowflake.connector.pandas_tools import write_pandas
 
-
-# -----------------------------------------------------------------------------
-# UPC NORMALIZATION
-# -----------------------------------------------------------------------------
-def normalize_upc(value) -> Optional[str]:
+def normalize_upc(value):
     """
     Normalize UPC / SR_UPC values before snapshot writes.
 
@@ -55,8 +37,7 @@ def normalize_upc(value) -> Optional[str]:
     elif isinstance(value, (float, np.floating)):
         if not np.isfinite(value):
             return None
-        # critical: removes ".0" and sci-notation artifacts
-        s = str(int(round(value)))
+        s = str(int(round(value)))   # critical: removes .0
 
     else:
         s = str(value).strip()
@@ -73,9 +54,7 @@ def normalize_upc(value) -> Optional[str]:
     return digits or None
 
 
-# -----------------------------------------------------------------------------
-# WEEK START
-# -----------------------------------------------------------------------------
+
 def get_week_start(d: pd.Timestamp) -> pd.Timestamp:
     """
     Normalize any given date to the Monday of that ISO week.
@@ -84,14 +63,11 @@ def get_week_start(d: pd.Timestamp) -> pd.Timestamp:
     return (d - pd.Timedelta(days=d.weekday())).normalize()
 
 
-# -----------------------------------------------------------------------------
-# SNAPSHOT WRITE
-# -----------------------------------------------------------------------------
 def save_gap_snapshot(
     conn,
     tenant_id: int,
     df_gaps: pd.DataFrame,
-    snapshot_week_start: Optional[Union[pd.Timestamp, "datetime.date"]] = None,
+    snapshot_week_start: Optional[pd.Timestamp] = None,
     triggered_by: Optional[str] = None,
 ) -> bool:
     """
@@ -99,13 +75,29 @@ def save_gap_snapshot(
       - GAP_REPORT_RUNS (header row)
       - GAP_REPORT_SNAPSHOT (detail rows)
 
-    Returns True if inserted, False if skipped/failed.
+    Parameters
+    ----------
+    conn : snowflake.connector.connection.SnowflakeConnection
+        Active Snowflake connection scoped to the tenant DB/SCHEMA.
+    tenant_id : int
+        Tenant identifier.
+    df_gaps : pd.DataFrame
+        Pre-shaped DataFrame containing gap rows with columns such as:
+        CHAIN_NAME, STORE_NUMBER, STORE_NAME, SALESPERSON_NAME,
+        SUPPLIER_NAME, PRODUCT_NAME, UPC, SR_UPC, IN_SCHEMATIC, IS_GAP,
+        CATEGORY, SUBCATEGORY, GAP_CASES, LAST_PURCHASE_DATE.
+    snapshot_week_start : pd.Timestamp, optional
+        Week start date. If None, uses "this week" based on UTC today.
+    triggered_by : str, optional
+        Who triggered this snapshot (user email, username, etc.).
 
-    Skip rules:
-    - If df_gaps is empty
-    - If a run already exists for (TENANT_ID, SNAPSHOT_WEEK_START) (first-run-only)
+    Returns
+    -------
+    bool
+        True if snapshot was inserted, False if skipped (no data, or
+        run already existed, or write_pandas reported failure).
     """
-    # 0) Early exit
+    # 0) Early exit if nothing to save
     if df_gaps is None or df_gaps.empty:
         return False
 
@@ -119,9 +111,9 @@ def save_gap_snapshot(
     else:
         snapshot_week_start_param = snapshot_week_start  # assume date/datetime
 
-    # 2) Insert header row into GAP_REPORT_RUNS (if not already present)
     cur = conn.cursor()
     try:
+        # 2) Check if a run already exists for this tenant + week
         check_sql = """
             SELECT RUN_ID
             FROM GAP_REPORT_RUNS
@@ -130,13 +122,13 @@ def save_gap_snapshot(
             LIMIT 1
         """
         cur.execute(check_sql, (tenant_id, snapshot_week_start_param))
-        existing = cur.fetchone()
-        if existing is not None:
+        row = cur.fetchone()
+        if row is not None:
             # First-run-only rule: don't overwrite history
             return False
 
+        # 3) Insert header row into GAP_REPORT_RUNS
         row_count = int(len(df_gaps))
-
         insert_run_sql = """
             INSERT INTO GAP_REPORT_RUNS
                 (TENANT_ID, SNAPSHOT_WEEK_START, TRIGGERED_BY, ROW_COUNT)
@@ -165,20 +157,17 @@ def save_gap_snapshot(
         run_id = run_row[0]
 
     finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
+        cur.close()
 
-    # 3) Prepare DataFrame for GAP_REPORT_SNAPSHOT
+    # 4) Prepare DataFrame for GAP_REPORT_SNAPSHOT
     df_to_save = df_gaps.copy()
 
-    # Required context columns
+    # Add required context columns
     df_to_save["TENANT_ID"] = tenant_id
     df_to_save["SNAPSHOT_WEEK_START"] = snapshot_week_start_param
     df_to_save["RUN_ID"] = run_id
 
-    # Snapshot columns (slice to what exists)
+    # Columns in the snapshot table; we slice to the ones that exist
     snapshot_cols = [
         "TENANT_ID",
         "SNAPSHOT_WEEK_START",
@@ -203,36 +192,40 @@ def save_gap_snapshot(
         "LAST_PURCHASE_DATE",
     ]
 
+    # Keep only columns that exist in df_to_save
     existing_cols = [c for c in snapshot_cols if c in df_to_save.columns]
     df_to_save = df_to_save[existing_cols]
 
+    # Normalize UPC if present
+    if "UPC" in df_to_save.columns:
+        df_to_save["UPC"] = df_to_save["UPC"].astype(str).str.strip()
+        df_to_save.loc[df_to_save["UPC"] == "", "UPC"] = None
+
+    # Normalize BOOLEAN columns to real Python bools
+    bool_cols = []
+    for col in ["IN_SCHEMATIC", "IS_GAP"]:
+        if col in df_to_save.columns:
+            bool_cols.append(col)
+
+    for col in bool_cols:
+        df_to_save[col] = df_to_save[col].map(
+            {
+                1: True,
+                0: False,
+                "1": True,
+                "0": False,
+                True: True,
+                False: False,
+            }
+        )
+
+    # If everything somehow vanished, do nothing
     if df_to_save.empty:
         return False
 
-    # --- HARD NORMALIZATION (DO NOT REMOVE) ---
-    # This is the last possible moment before writing to Snowflake.
-    # It prevents ".0" artifacts from entering the snapshot tables.
-    if "UPC" in df_to_save.columns:
-        df_to_save["UPC"] = df_to_save["UPC"].apply(normalize_upc)
+    
 
-    if "SR_UPC" in df_to_save.columns:
-        df_to_save["SR_UPC"] = df_to_save["SR_UPC"].apply(normalize_upc)
-
-    # Normalize BOOLEAN columns to real Python bools
-    for col in ["IN_SCHEMATIC", "IS_GAP"]:
-        if col in df_to_save.columns:
-            df_to_save[col] = df_to_save[col].map(
-                {
-                    1: True,
-                    0: False,
-                    "1": True,
-                    "0": False,
-                    True: True,
-                    False: False,
-                }
-            )
-
-    # 4) Bulk insert into GAP_REPORT_SNAPSHOT
+    # 5) Bulk insert into GAP_REPORT_SNAPSHOT
     success, nchunks, nrows, _ = write_pandas(
         conn,
         df_to_save,
