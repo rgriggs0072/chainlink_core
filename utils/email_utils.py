@@ -22,6 +22,9 @@ import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from utils.templates import email_templates
+from email.mime.application import MIMEApplication
+from typing import Optional, List, Union
+
 
 
 def get_mailjet_server() -> smtplib.SMTP:
@@ -79,6 +82,60 @@ def send_email(to_email: str, subject: str, html: str, from_email: str) -> dict:
         logging.exception(f"Error sending email to {to_email}: {e}")
 
         return {"success": False, "error": str(e)}
+
+
+def send_email_with_attachment(
+    to_email: str,
+    subject: str,
+    html: str,
+    from_email: str,
+    cc_email: Optional[str] = None,
+    attachment_bytes: Optional[bytes] = None,
+    attachment_filename: str = "attachment.pdf",
+    attachment_mime: str = "application/pdf",
+) -> dict:
+    """
+    Send an HTML email via Mailjet SMTP with optional CC + single attachment.
+
+    Args:
+        to_email: Primary recipient.
+        cc_email: Optional CC recipient (e.g., manager).
+        attachment_bytes: Raw bytes for the attachment.
+        attachment_filename: Filename shown in the email client.
+        attachment_mime: MIME type, default application/pdf.
+
+    Returns:
+        dict: {"success": bool, "error": str|None}
+    """
+    msg = MIMEMultipart()
+    msg["From"] = from_email
+    msg["To"] = to_email
+    if cc_email:
+        msg["Cc"] = cc_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(html, "html"))
+
+    if attachment_bytes:
+        part = MIMEApplication(attachment_bytes, _subtype=attachment_mime.split("/")[-1])
+        part.add_header("Content-Disposition", "attachment", filename=attachment_filename)
+        msg.attach(part)
+
+    try:
+        server = get_mailjet_server()
+        recipients = [to_email] + ([cc_email] if cc_email else [])
+        server.sendmail(from_email, recipients, msg.as_string())
+        server.quit()
+
+        logging.info(f"Email sent to {to_email} (cc={cc_email}) subject='{subject}' attach={bool(attachment_bytes)}")
+        return {"success": True, "error": None}
+
+    except Exception as e:
+        st.warning(f"⚠️ Failed to send email to {to_email}")
+        st.exception(e)
+        logging.exception(f"Error sending email to {to_email}: {e}")
+        return {"success": False, "error": str(e)}
+
 
 
 def send_reset_email(email: str, token: str, first_name: str = "User") -> dict:

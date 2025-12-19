@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Optional, Union
 import numpy as np
 import pandas as pd
+import datetime
 from snowflake.connector.pandas_tools import write_pandas
 
 
