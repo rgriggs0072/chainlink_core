@@ -6,30 +6,25 @@ Page overview for future devs:
 - Sends Gap History PDFs (from GAP_CURRENT_STREAKS) to:
     - salesperson (TO)
     - manager (CC)
-- Email body includes a short execution-style summary.
-- Attachment is the Gap History PDF (per salesperson).
+- Email body includes a short execution-style summary (like legacy HTML).
+- The attachment is the Gap History PDF (per salesperson).
 
 Hard rules:
 - This module contains NO Streamlit UI.
 - It does NOT publish snapshots or mutate data.
 - It assumes snapshots are already published for the current week.
-
-Data contract:
-- DO NOT enrich ADDRESS outside this module.
-- fetch_current_streaks() is the single source of truth for enriched streak rows
-  (preview/download/email should all call it).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from utils.email_utils import send_email_with_attachment
-from utils.pdf_reports import build_gap_streaks_pdf, GAP_HISTORY_PDF_COLUMNS
+from utils.pdf_reports import build_gap_streaks_pdf
 
 
 # -----------------------------------------------------------------------------
@@ -65,11 +60,10 @@ def load_sales_contacts(con, tenant_id: int) -> pd.DataFrame:
             WHERE TENANT_ID = %s
               AND IS_ACTIVE = TRUE
             """,
-            (int(tenant_id),),
+            (tenant_id,),
         )
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
-
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     if not df.empty:
         df["SALESPERSON_NAME_UPPER"] = df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
@@ -85,23 +79,13 @@ def fetch_current_streaks(
     min_streak: int = 1,
 ) -> pd.DataFrame:
     """
-    Fetch current streak rows from GAP_CURRENT_STREAKS, enriched with customer fields from CUSTOMERS.
+    Fetch current streak rows from GAP_CURRENT_STREAKS.
 
-    Why this exists:
-    - GAP_CURRENT_STREAKS does NOT contain ADDRESS.
-    - CUSTOMERS does.
-    - This function is the ONE shared data path for preview/download/email.
-
-    Join keys:
-    - TENANT_ID + CHAIN_NAME + STORE_NUMBER
-
-    Notes:
-    - CUSTOMERS.TENANT_ID is VARCHAR in your schema, while streaks TENANT_ID is NUMBER.
-      We join using TO_VARCHAR(s.TENANT_ID) to match CUSTOMERS.TENANT_ID.
+    Note:
+    - This view already represents "current streaks" (i.e., streaks that end on latest week).
     """
-
-    where_parts = ["s.TENANT_ID = %s", "s.STREAK_WEEKS >= %s"]
-    params: List[object] = [int(tenant_id), int(min_streak)]
+    where_parts = ["TENANT_ID = %s", "STREAK_WEEKS >= %s"]
+    params: List[object] = [tenant_id, int(min_streak)]
 
     def add_in(col: str, vals: Optional[List[str]]):
         vals = [v for v in (vals or []) if v]
@@ -111,75 +95,52 @@ def fetch_current_streaks(
         where_parts.append(f"{col} IN ({placeholders})")
         params.extend(vals)
 
-    add_in("s.CHAIN_NAME", chains)
-    add_in("s.SUPPLIER_NAME", suppliers)
-    add_in("s.SALESPERSON_NAME", salespeople)
+    add_in("CHAIN_NAME", chains)
+    add_in("SUPPLIER_NAME", suppliers)
+    add_in("SALESPERSON_NAME", salespeople)
 
     sql = f"""
-        WITH c_dedup AS (
-            SELECT
-                TENANT_ID,
-                CHAIN_NAME,
-                STORE_NUMBER,
-                ADDRESS,
-                CITY,
-                COUNTY,
-                ROW_NUMBER() OVER (
-                    PARTITION BY TENANT_ID, CHAIN_NAME, STORE_NUMBER
-                    ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
-                ) AS rn
-            FROM CUSTOMERS
-            WHERE TENANT_ID = %s
-        )
         SELECT
-          s.TENANT_ID,
-          s.SNAPSHOT_WEEK_START,
-          s.FIRST_GAP_WEEK,
-          s.LAST_GAP_WEEK,
-          s.SALESPERSON_NAME,
-          s.CHAIN_NAME,
-          s.STORE_NUMBER,
-          s.STORE_NAME,
-          COALESCE(c.ADDRESS, '') AS ADDRESS,
-          COALESCE(c.CITY, '')    AS CITY,
-          COALESCE(c.COUNTY, '')  AS COUNTY,
-          s.UPC,
-          s.PRODUCT_NAME,
-          s.SUPPLIER_NAME,
-          s.STREAK_WEEKS
-        FROM GAP_CURRENT_STREAKS s
-        LEFT JOIN c_dedup c
-          ON c.TENANT_ID = TO_VARCHAR(s.TENANT_ID)
-         AND c.CHAIN_NAME = s.CHAIN_NAME
-         AND c.STORE_NUMBER = s.STORE_NUMBER
-         AND c.rn = 1
+          SNAPSHOT_WEEK_START,
+          FIRST_GAP_WEEK,
+          LAST_GAP_WEEK,
+          SALESPERSON_NAME,
+          CHAIN_NAME,
+          STORE_NUMBER,
+          STORE_NAME,
+          UPC,
+          PRODUCT_NAME,
+          SUPPLIER_NAME,
+          STREAK_WEEKS
+        FROM GAP_CURRENT_STREAKS
         WHERE {" AND ".join(where_parts)}
-        ORDER BY s.SALESPERSON_NAME, s.STREAK_WEEKS DESC, s.CHAIN_NAME, s.STORE_NUMBER, s.PRODUCT_NAME
+        ORDER BY SALESPERSON_NAME, STREAK_WEEKS DESC, CHAIN_NAME, STORE_NUMBER, PRODUCT_NAME
     """
 
-    # We pass tenant_id twice:
-    #  - first for CUSTOMERS CTE (VARCHAR tenant_id)
-    #  - then for the main WHERE (NUMBER tenant_id)
-    params_with_cte = [str(tenant_id)] + params
-
     with con.cursor() as cur:
-        cur.execute(sql, params_with_cte)
+        cur.execute(sql, params)
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
-
     return pd.DataFrame(rows, columns=cols)
 
 
 # -----------------------------------------------------------------------------
 # Summary HTML (simple + actionable)
 # -----------------------------------------------------------------------------
+from datetime import datetime
+import pandas as pd
+
+
 def build_summary_html(salesperson_name: str, sp_df: pd.DataFrame, tenant_name: str = "") -> str:
     """
     Build a professional HTML email body for Gap History (PDF attachment).
 
-    Notes:
-    - Keep styling email-client safe (tables + simple CSS).
+    Notes for future devs:
+    - Keep all styling inline / in <style> (email-client safe).
+    - No external CSS or JS.
+    - Assume some clients strip advanced CSS; tables are most reliable.
     """
+
     df = sp_df.copy()
     df["STREAK_WEEKS"] = pd.to_numeric(df.get("STREAK_WEEKS"), errors="coerce").fillna(1).astype(int)
 
@@ -188,16 +149,32 @@ def build_summary_html(salesperson_name: str, sp_df: pd.DataFrame, tenant_name: 
     two_three = int(df["STREAK_WEEKS"].isin([2, 3]).sum())
     four_plus = int((df["STREAK_WEEKS"] >= 4).sum())
 
-    top_chains = df["CHAIN_NAME"].fillna("Unknown").value_counts().head(3).to_dict()
-    top_suppliers = df["SUPPLIER_NAME"].fillna("Unknown").value_counts().head(3).to_dict()
+    # Top chains / suppliers
+    top_chains = (
+        df["CHAIN_NAME"].fillna("Unknown")
+        .value_counts()
+        .head(3)
+        .to_dict()
+    )
+    top_suppliers = (
+        df["SUPPLIER_NAME"].fillna("Unknown")
+        .value_counts()
+        .head(3)
+        .to_dict()
+    )
 
     def _bullet_lines(d: dict) -> str:
         if not d:
             return "<div style='color:#666;'>None</div>"
-        return "".join(f"<div style='margin:2px 0;'>• <b>{k}</b>: {v}</div>" for k, v in d.items())
+        return "".join(
+            f"<div style='margin:2px 0;'>• <b>{k}</b>: {v}</div>"
+            for k, v in d.items()
+        )
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # Light Chainlink-ish look without being fragile in email clients
+    # (Tables + basic CSS)
     return f"""
 <!doctype html>
 <html>
@@ -232,10 +209,22 @@ def build_summary_html(salesperson_name: str, sp_df: pd.DataFrame, tenant_name: 
       <div class="content">
         <table class="metrics" role="presentation">
           <tr>
-            <td class="metric" width="25%"><div class="m_label">Active gaps</div><div class="m_val">{active_gaps}</div></td>
-            <td class="metric" width="25%"><div class="m_label">New this week</div><div class="m_val">{new_this_week}</div></td>
-            <td class="metric" width="25%"><div class="m_label">2–3 weeks</div><div class="m_val">{two_three}</div></td>
-            <td class="metric" width="25%"><div class="m_label">4+ weeks</div><div class="m_val">{four_plus}</div></td>
+            <td class="metric" width="25%">
+              <div class="m_label">Active gaps</div>
+              <div class="m_val">{active_gaps}</div>
+            </td>
+            <td class="metric" width="25%">
+              <div class="m_label">New this week</div>
+              <div class="m_val">{new_this_week}</div>
+            </td>
+            <td class="metric" width="25%">
+              <div class="m_label">2–3 weeks</div>
+              <div class="m_val">{two_three}</div>
+            </td>
+            <td class="metric" width="25%">
+              <div class="m_label">4+ weeks</div>
+              <div class="m_val">{four_plus}</div>
+            </td>
           </tr>
         </table>
 
@@ -263,6 +252,7 @@ def build_summary_html(salesperson_name: str, sp_df: pd.DataFrame, tenant_name: 
 """.strip()
 
 
+
 # -----------------------------------------------------------------------------
 # Orchestrator
 # -----------------------------------------------------------------------------
@@ -288,6 +278,10 @@ def send_gap_history_pdfs(
         "errors": [{"salesperson": str, "error": str}]
       }
     """
+
+    # ------------------------------------------------------------------
+    # Load contacts
+    # ------------------------------------------------------------------
     contacts_df = load_sales_contacts(con, tenant_id)
     if contacts_df.empty:
         return {
@@ -297,12 +291,19 @@ def send_gap_history_pdfs(
             "errors": [],
         }
 
+    contacts_df = contacts_df.copy()
+    contacts_df["SALESPERSON_NAME_UPPER"] = (
+        contacts_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
+    )
+
     contact_lookup = (
         contacts_df.drop_duplicates(subset=["SALESPERSON_NAME_UPPER"])
         .set_index("SALESPERSON_NAME_UPPER")
     )
 
-    # Single enriched data path (includes ADDRESS)
+    # ------------------------------------------------------------------
+    # Load streaks
+    # ------------------------------------------------------------------
     streaks_df = fetch_current_streaks(
         con=con,
         tenant_id=tenant_id,
@@ -320,14 +321,19 @@ def send_gap_history_pdfs(
             "errors": [],
         }
 
+    streaks_df = streaks_df.copy()
     streaks_df["SALESPERSON_NAME_UPPER"] = (
         streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
     )
 
+    # Enforce "send selected only" if provided
     if only_salespeople:
         wanted = {str(x).strip().upper() for x in only_salespeople if x}
         streaks_df = streaks_df[streaks_df["SALESPERSON_NAME_UPPER"].isin(wanted)]
 
+    # ------------------------------------------------------------------
+    # Send loop
+    # ------------------------------------------------------------------
     success = 0
     fail = 0
     skipped: List[str] = []
@@ -348,16 +354,28 @@ def send_gap_history_pdfs(
             continue
 
         try:
-            pdf_df = sp_df[[c for c in GAP_HISTORY_PDF_COLUMNS if c in sp_df.columns]].copy()
+            # ---------------------------
+            # Build PDF
+            # ---------------------------
+            pdf_cols = [
+                "SALESPERSON_NAME",
+                "CHAIN_NAME",
+                "STORE_NUMBER",
+                "STORE_NAME",
+                "SUPPLIER_NAME",
+                "PRODUCT_NAME",
+                "UPC",
+                "STREAK_WEEKS",
+                "FIRST_GAP_WEEK",
+                "LAST_GAP_WEEK",
+            ]
+            pdf_df = sp_df[[c for c in pdf_cols if c in sp_df.columns]].copy()
+            pdf_bytes = build_gap_streaks_pdf(pdf_df, tenant_name=tenant_name)
 
-
-            pdf_bytes = build_gap_streaks_pdf(
-                pdf_df,
-                tenant_name=tenant_name,
-                salesperson_name=salesperson_name,
-            )
-
-            html_body = build_summary_html(salesperson_name, sp_df, tenant_name=tenant_name)
+            # ---------------------------
+            # Build email
+            # ---------------------------
+            html_body = build_summary_html(salesperson_name, sp_df)
 
             safe_name = salesperson_name.replace(" ", "_")
             subject = f"Gap History Report – {tenant_name}"
@@ -377,7 +395,9 @@ def send_gap_history_pdfs(
                 success += 1
             else:
                 fail += 1
-                errors.append({"salesperson": salesperson_name, "error": result.get("error")})
+                errors.append(
+                    {"salesperson": salesperson_name, "error": result.get("error")}
+                )
 
         except Exception as e:
             fail += 1

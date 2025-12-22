@@ -52,6 +52,7 @@ try:
         Spacer,
         PageBreak,
     )
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
     _HAS_REPORTLAB = True
 except Exception:  # pragma: no cover
@@ -124,6 +125,31 @@ def _fmt_currency(x) -> str:
 def _x_left() -> float:
     """Left margin helper for canvas-based PDFs."""
     return 0.5 * inch
+
+
+
+# ===================================================================
+# Shared constants (keep column contracts centralized)
+# ===================================================================
+
+# NOTE:
+# - This column list is the canonical "Gap History PDF input contract".
+# - Any page/email code that builds the "gap streaks" PDF should slice using this list.
+# - build_gap_streaks_pdf() will still defensively create ADDRESS if missing,
+#   but upstream should always try to supply it.
+GAP_HISTORY_PDF_COLUMNS = [
+    "CHAIN_NAME",
+    "STORE_NUMBER",
+    "STORE_NAME",
+    "ADDRESS",
+    "SUPPLIER_NAME",
+    "PRODUCT_NAME",
+    "UPC",
+    "STREAK_WEEKS",
+    "FIRST_GAP_WEEK",
+    "LAST_GAP_WEEK",
+]
+
 
 
 # ===================================================================
@@ -322,6 +348,7 @@ def build_predictive_truck_pdf(
     )
     styles = getSampleStyleSheet()
     h1, h2, h3, body = (
+
         styles["Heading1"],
         styles["Heading2"],
         styles["Heading3"],
@@ -479,6 +506,7 @@ def build_predictive_truck_pdf(
                     _df_to_table(
                         chunk,
                         col_widths=[50, 70, 90, 80, 220, 55, 45, 45],
+
                         numeric_cols=["Pred", "Lo", "Hi"],
                     )
                 )
@@ -513,29 +541,94 @@ def build_predictive_truck_pdf(
 def build_gap_streaks_pdf(
     df: pd.DataFrame,
     tenant_name: str = "Client",
+    salesperson_name: Optional[str] = None,
     as_of_date: Optional[datetime] = None,
 ) -> bytes:
     """
     Build a Gap Streaks PDF with a compact landscape table.
 
-    Columns shown in the PDF (CHAIN_NAME intentionally omitted to save space):
-        Salesperson, Store #, Store, Supplier, Product, Wks, First gap, Last gap
+    Table columns:
+        Store#, Store, Address, Supplier, Product, Wks
+
+    Header includes tenant + salesperson (so we do NOT repeat salesperson per row).
 
     Color coding by streak length:
         2 weeks  -> soft yellow
         3 weeks  -> soft orange
         4+ weeks -> soft red
+
+    Dev Notes
+    ---------
+    - Uses Paragraph cells to wrap long text cleanly.
+    - Sanitizes embedded newlines/tabs and collapses whitespace to prevent
+      "stacked" / exploded rows in ReportLab tables.
+    - Truncates long strings to keep the table readable.
     """
     if not _HAS_REPORTLAB:
-        txt = (
-            f"Gap Streaks Report – {tenant_name}\n"
-            "Install 'reportlab' for full PDF rendering."
-        )
+        txt = f"Gap Streaks Report – {tenant_name}\nInstall 'reportlab' for full PDF rendering."
         return txt.encode("utf-8")
 
     if as_of_date is None:
         as_of_date = datetime.today()
 
+    df_display = df.copy()
+
+    # Normalize Address casing (some sources may return Address/address)
+    if "ADDRESS" not in df_display.columns:
+        for alt in ("Address", "address"):
+            if alt in df_display.columns:
+                df_display = df_display.rename(columns={alt: "ADDRESS"})
+                break
+
+    # -----------------------------
+    # Ensure required columns exist
+    # -----------------------------
+    if "ADDRESS" not in df_display.columns:
+        df_display["ADDRESS"] = ""
+
+    # Make streak numeric + safe
+    if "STREAK_WEEKS" in df_display.columns:
+        df_display["STREAK_WEEKS"] = (
+            pd.to_numeric(df_display["STREAK_WEEKS"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
+    else:
+        df_display["STREAK_WEEKS"] = 0
+
+    # -----------------------------
+    # Sort: longest streaks first
+    # -----------------------------
+    sort_cols = [c for c in ["STREAK_WEEKS", "CHAIN_NAME", "STORE_NUMBER", "PRODUCT_NAME"] if c in df_display.columns]
+    if sort_cols:
+        asc = [False, True, True, True][: len(sort_cols)]
+        df_display = df_display.sort_values(sort_cols, ascending=asc)
+
+    # -----------------------------
+    # Table columns (NO salesperson)
+    # -----------------------------
+    cols = [
+        "STORE_NUMBER",
+        "STORE_NAME",
+        "ADDRESS",
+        "SUPPLIER_NAME",
+        "PRODUCT_NAME",
+        "STREAK_WEEKS",
+    ]
+    cols = [c for c in cols if c in df_display.columns]
+
+    header_labels_map = {
+        "STORE_NUMBER": "Store#",
+        "STORE_NAME": "Store",
+        "ADDRESS": "Address",
+        "SUPPLIER_NAME": "Supplier",
+        "PRODUCT_NAME": "Product",
+        "STREAK_WEEKS": "Wks",
+    }
+
+    # -----------------------------
+    # PDF layout
+    # -----------------------------
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -545,17 +638,91 @@ def build_gap_streaks_pdf(
         topMargin=40,
         bottomMargin=30,
     )
+
     styles = getSampleStyleSheet()
+
+    # Subtitle + legend (avoid clipping + nicer read)
+    sub_style = styles["Normal"].clone("gap_streaks_subtitle")
+    sub_style.fontSize = 10
+    sub_style.leading = 12
+
+    legend_style = styles["Normal"].clone("gap_streaks_legend")
+    legend_style.fontSize = 10
+    legend_style.leading = 12
+
+    # --- Table cell styles (must be defined BEFORE _cell) ---
+    cell_style = ParagraphStyle(
+        "gap_cell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7,
+        leading=9,
+        alignment=TA_LEFT,
+        wordWrap="CJK",   # wraps long tokens better than default
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+    cell_style_center = ParagraphStyle(
+        "gap_cell_center",
+        parent=cell_style,
+        alignment=TA_CENTER,
+    )
+    header_style = ParagraphStyle(
+        "gap_header",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        alignment=TA_CENTER,
+        textColor=colors.white,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
+
+    def _clean_text(val: object) -> str:
+        """Force single-line, collapsed whitespace, ASCII-safe."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return ""
+        s = str(val)
+        s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        s = " ".join(s.split())
+        return _ascii_safe(s)
+
+    def _truncate(s: str, max_len: int) -> str:
+        if max_len and len(s) > max_len:
+            return s[: max_len - 1] + "…"
+        return s
+
+    def _cell(val: object, *, center: bool = False, max_len: Optional[int] = None) -> Paragraph:
+        """Return a wrapped Paragraph cell."""
+        txt = _clean_text(val)
+        if max_len:
+            txt = _truncate(txt, max_len)
+        return Paragraph(txt, cell_style_center if center else cell_style)
+
+    # Tuned truncation per column to avoid ugly wraps
+    trunc = {
+        "STORE_NUMBER": 10,
+        "STORE_NAME": 28,
+        "ADDRESS": 40,
+        "SUPPLIER_NAME": 30,
+        "PRODUCT_NAME": 60,
+        "STREAK_WEEKS": 3,
+    }
+
+    # -----------------------------
+    # Build story header
+    # -----------------------------
     story: list = []
 
-    # ------------------------------------------------------------------
-    # Header / metadata
-    # ------------------------------------------------------------------
-    title = Paragraph(f"Gap Streaks Report – {tenant_name}", styles["Title"])
+    title_text = f"Gap Streaks Report – {tenant_name}"
+    if salesperson_name:
+        title_text += f" – {salesperson_name}"
+
+    title = Paragraph(_clean_text(title_text), styles["Title"])
     subtitle = Paragraph(
-        f"As of {as_of_date.strftime('%Y-%m-%d')} &nbsp;&nbsp; "
-        f"(streaks by salesperson / store / item)",
-        styles["Normal"],
+        f"As of {as_of_date.strftime('%Y-%m-%d')} &nbsp;&nbsp; (streaks by store / item)",
+        sub_style,
     )
     legend = Paragraph(
         (
@@ -564,110 +731,63 @@ def build_gap_streaks_pdf(
             "<font color='#FFE0B2'>Orange</font> = 3 weeks · "
             "<font color='#FFCCCC'>Red</font> = 4+ weeks"
         ),
-        styles["Normal"],
+        legend_style,
     )
 
-    story.extend([title, Spacer(1, 6), subtitle, Spacer(1, 6), legend, Spacer(1, 12)])
+    story.extend([title, Spacer(1, 8), subtitle, Spacer(1, 6), legend, Spacer(1, 14)])
 
-    # ------------------------------------------------------------------
-    # Table data prep
-    # ------------------------------------------------------------------
-    # 👉 NOTE: CHAIN_NAME is intentionally NOT included
-    cols = [
-        "SALESPERSON_NAME",
-        "STORE_NUMBER",
-        "STORE_NAME",
-        "SUPPLIER_NAME",
-        "PRODUCT_NAME",
-        "STREAK_WEEKS",
-        "FIRST_GAP_WEEK",
-        "LAST_GAP_WEEK",
-    ]
-    cols = [c for c in cols if c in df.columns]
+    # -----------------------------
+    # Build table data ONCE
+    # -----------------------------
+    data: list[list[object]] = []
 
-    df_display = df.copy()
+    # Header row as Paragraphs so it aligns perfectly
+    data.append([Paragraph(header_labels_map.get(c, c), header_style) for c in cols])
 
-    # Convert date columns to strings
-    for date_col in ["FIRST_GAP_WEEK", "LAST_GAP_WEEK"]:
-        if date_col in df_display.columns:
-            df_display[date_col] = df_display[date_col].astype(str)
-
-    # Sort: salesperson → longest streaks first → store → product
-    sort_cols = [c for c in ["SALESPERSON_NAME", "STREAK_WEEKS", "STORE_NAME"] if c in df_display.columns]
-    if sort_cols:
-        ascending = [True, False, True][: len(sort_cols)]
-        df_display = df_display.sort_values(sort_cols, ascending=ascending)
-
-    data: list[list[str]] = []
-
-    # Short, readable headers
-    header_labels_map = {
-        "SALESPERSON_NAME": "Salesperson",
-        "STORE_NUMBER": "Store #",
-        "STORE_NAME": "Store",
-        "SUPPLIER_NAME": "Supplier",
-        "PRODUCT_NAME": "Product",
-        "STREAK_WEEKS": "Wks",
-        "FIRST_GAP_WEEK": "First gap",
-        "LAST_GAP_WEEK": "Last gap",
-    }
-    header_row = [header_labels_map.get(col, col) for col in cols]
-    data.append(header_row)
-
-    # Body rows
     for _, row in df_display[cols].iterrows():
-        data.append([str(row[c]) if pd.notna(row[c]) else "" for c in cols])
+        row_cells: list[Paragraph] = []
+        for c in cols:
+            is_center = c in {"STORE_NUMBER", "STREAK_WEEKS"}
+            row_cells.append(_cell(row.get(c), center=is_center, max_len=trunc.get(c)))
+        data.append(row_cells)
 
-    # ------------------------------------------------------------------
-    # Column widths – tuned to avoid overlap (total ~700pt)
-    # ------------------------------------------------------------------
-    # Salesperson, Store #, Store, Supplier, Product, Wks, First, Last
-    col_widths = [
-        90,   # Salesperson
-        30,   # Store #
-        60,   # Store
-        150,   # Supplier
-        230,  # Product (largest, to avoid wrapping over Supplier)
-        35,   # Wks (tiny)
-        55,   # First gap
-        55,   # Last gap
-    ][: len(cols)]
+    # Column widths (landscape letter)
+    # Store#, Store, Address, Supplier, Product, Wks
+    col_widths = [38, 80, 185, 135, 260, 34][: len(cols)]
 
     table = Table(data, colWidths=col_widths, repeatRows=1)
 
-    # ------------------------------------------------------------------
-    # Base styles + streak-based background colors
-    # ------------------------------------------------------------------
+    # -----------------------------
+    # Table styling
+    # -----------------------------
     style_commands: list[tuple] = [
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),   # header
-        ("FONTSIZE", (0, 1), (-1, -1), 7),  # body
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(PRIMARY_HEX)),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+
         ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (1, 1), (1, -1), "CENTER"),  # Store #
-        ("ALIGN", (5, 1), (5, -1), "CENTER"),  # Wks
+
+        # This prevents the "stacked columns" look
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+
+        # Padding tuned for dense tables
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]
 
-    # Streak color coding
-    if "STREAK_WEEKS" in cols:
-        streak_idx = cols.index("STREAK_WEEKS")
-        for row_idx, (_, row) in enumerate(df_display.iterrows(), start=1):
-            try:
-                streak = int(row.get("STREAK_WEEKS", 0))
-            except Exception:
-                streak = 0
-
+    # Row color by streak length
+    if "STREAK_WEEKS" in df_display.columns:
+        for row_idx, (_, r) in enumerate(df_display.iterrows(), start=1):
+            streak = int(r.get("STREAK_WEEKS", 0) or 0)
             bg_color = None
             if streak >= 4:
-                bg_color = colors.HexColor("#FFCCCC")   # soft red
+                bg_color = colors.HexColor("#FFCCCC")
             elif streak == 3:
-                bg_color = colors.HexColor("#FFE0B2")   # soft orange
+                bg_color = colors.HexColor("#FFE0B2")
             elif streak == 2:
-                bg_color = colors.HexColor("#FFF9C4")   # soft yellow
-
+                bg_color = colors.HexColor("#FFF9C4")
             if bg_color is not None:
                 style_commands.append(("BACKGROUND", (0, row_idx), (-1, row_idx), bg_color))
 

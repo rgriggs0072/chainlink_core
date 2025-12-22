@@ -14,20 +14,24 @@ Key UI sections:
 Hard rules:
 - Publishing ALWAYS runs with "All" filters to snapshot full tenant-wide data.
 - Never publish whatever the user filtered on-screen.
+
+Data contract:
+- This page uses fetch_current_streaks() (shared with email path) so preview/download/email stay consistent.
+- Address must be available as ADDRESS (normalized here if upstream uses different casing).
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
-from utils.pdf_reports import build_gap_streaks_pdf
+from utils.pdf_reports import build_gap_streaks_pdf, GAP_HISTORY_PDF_COLUMNS
 from utils.gap_history_helpers import save_gap_snapshot, normalize_upc
 from utils.reports_utils import create_gap_report
+from utils.gap_history_emailer import fetch_current_streaks
 
 # Optional admin gate (use if you have it; otherwise we fall back gracefully)
 try:
@@ -35,7 +39,7 @@ try:
 except Exception:
     is_admin_user = None
 
-
+    
 # ----------------------------------------------------------------------
 # Tenant helpers
 # ----------------------------------------------------------------------
@@ -54,7 +58,11 @@ def _get_tenant_name_fallback() -> str:
     tenant_config = st.session_state.get("tenant_config") or {}
     if isinstance(tenant_config, dict):
         return tenant_config.get("display_name") or tenant_config.get("tenant_name") or "Client"
-    return getattr(tenant_config, "display_name", None) or getattr(tenant_config, "tenant_name", None) or "Client"
+    return (
+        getattr(tenant_config, "display_name", None)
+        or getattr(tenant_config, "tenant_name", None)
+        or "Client"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -85,7 +93,7 @@ def fetch_snapshot_status(conn, tenant_id: int) -> pd.DataFrame:
     """
     cur = conn.cursor()
     try:
-        cur.execute(sql, (tenant_id,))
+        cur.execute(sql, (int(tenant_id),))
         rows = cur.fetchall()
         if not rows:
             return pd.DataFrame()
@@ -100,12 +108,11 @@ def _user_is_admin(tenant_id: int) -> bool:
     Page-level helper.
     Determines whether the logged-in user is an ADMIN for this tenant.
     """
-    user_email = (
-        st.session_state.get("user_email")
-        or st.session_state.get("username")
-        or ""
-    )
+    user_email = st.session_state.get("user_email") or st.session_state.get("username") or ""
     if not user_email:
+        return False
+
+    if is_admin_user is None:
         return False
 
     try:
@@ -130,26 +137,16 @@ def build_snapshot_df_from_gap_report(df_gaps: pd.DataFrame) -> pd.DataFrame:
 
     snapshot_df["SUPPLIER_NAME"] = df_gaps.get("SUPPLIER")
     snapshot_df["PRODUCT_NAME"] = df_gaps.get("PRODUCT_NAME")
-
     snapshot_df["SALESPERSON_NAME"] = df_gaps.get("SALESPERSON")
 
     # dg_upc -> UPC (schematic key)
-    if "dg_upc" in df_gaps.columns:
-        snapshot_df["UPC"] = df_gaps["dg_upc"].apply(normalize_upc)
-    else:
-        snapshot_df["UPC"] = None
+    snapshot_df["UPC"] = df_gaps["dg_upc"].apply(normalize_upc) if "dg_upc" in df_gaps.columns else None
 
     # sr_upc -> SR_UPC (sales key)
-    if "sr_upc" in df_gaps.columns:
-        snapshot_df["SR_UPC"] = df_gaps["sr_upc"].apply(normalize_upc)
-    else:
-        snapshot_df["SR_UPC"] = None
+    snapshot_df["SR_UPC"] = df_gaps["sr_upc"].apply(normalize_upc) if "sr_upc" in df_gaps.columns else None
 
     # IN_SCHEMATIC (best-effort)
-    if "In_Schematic" in df_gaps.columns:
-        snapshot_df["IN_SCHEMATIC"] = df_gaps["In_Schematic"]
-    else:
-        snapshot_df["IN_SCHEMATIC"] = True
+    snapshot_df["IN_SCHEMATIC"] = df_gaps["In_Schematic"] if "In_Schematic" in df_gaps.columns else True
 
     sr = snapshot_df["SR_UPC"]
     snapshot_df["IS_GAP"] = sr.isna() | (sr.astype(str).str.strip() == "")
@@ -168,12 +165,7 @@ def publish_weekly_snapshot_all(conn, tenant_id: int) -> Tuple[bool, str]:
 
     Returns (success, message).
     """
-    triggered_by = (
-        st.session_state.get("user_email")
-        or st.session_state.get("username")
-        or "gap_history_publish"
-    )
-
+    triggered_by = st.session_state.get("user_email") or st.session_state.get("username") or "gap_history_publish"
     snapshot_week_start = _get_week_start(pd.Timestamp.utcnow().normalize())
 
     temp_file_path = None
@@ -191,7 +183,7 @@ def publish_weekly_snapshot_all(conn, tenant_id: int) -> Tuple[bool, str]:
 
         saved = save_gap_snapshot(
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=int(tenant_id),
             df_gaps=snapshot_df,
             snapshot_week_start=snapshot_week_start,
             triggered_by=triggered_by,
@@ -213,46 +205,7 @@ def publish_weekly_snapshot_all(conn, tenant_id: int) -> Tuple[bool, str]:
 
 
 # ----------------------------------------------------------------------
-# Streak data access
-# ----------------------------------------------------------------------
-def fetch_gap_streaks(conn, tenant_id: int) -> pd.DataFrame:
-    """Fetch current gap streaks for this tenant from GAP_CURRENT_STREAKS."""
-    sql = """
-        SELECT
-            SNAPSHOT_WEEK_START,
-            FIRST_GAP_WEEK,
-            LAST_GAP_WEEK,
-            SALESPERSON_NAME,
-            CHAIN_NAME,
-            STORE_NUMBER,
-            STORE_NAME,
-            UPC,
-            PRODUCT_NAME,
-            SUPPLIER_NAME,
-            STREAK_WEEKS
-        FROM GAP_CURRENT_STREAKS
-        WHERE TENANT_ID = %s
-        ORDER BY
-            SALESPERSON_NAME,
-            STREAK_WEEKS DESC,
-            CHAIN_NAME,
-            STORE_NUMBER,
-            PRODUCT_NAME
-    """
-    cur = conn.cursor()
-    try:
-        cur.execute(sql, (tenant_id,))
-        rows = cur.fetchall()
-        if not rows:
-            return pd.DataFrame()
-        cols = [c[0] for c in cur.description]
-        return pd.DataFrame(rows, columns=cols)
-    finally:
-        cur.close()
-
-
-# ----------------------------------------------------------------------
-# Styling
+# Styling helpers
 # ----------------------------------------------------------------------
 def _assign_streak_color(streak_weeks: int) -> str:
     """1 -> '', 2 -> yellow, 3 -> orange, 4+ -> red."""
@@ -286,6 +239,36 @@ def _style_gap_table(df: pd.DataFrame):
     except Exception:
         pass
     return styler
+
+
+def _normalize_address_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize address column naming to ADDRESS.
+
+    Why:
+    - Some upstream paths may return Address/address.
+    - PDF builder expects ADDRESS.
+    """
+    if df is None or df.empty:
+        return df
+
+    if "ADDRESS" in df.columns:
+        return df
+
+    for alt in ("Address", "address"):
+        if alt in df.columns:
+            return df.rename(columns={alt: "ADDRESS"})
+
+    # Ensure it exists to avoid KeyErrors in slicing and keep PDF consistent
+    out = df.copy()
+    out["ADDRESS"] = ""
+    return out
+
+
+def _safe_select(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """Select only columns that exist (prevents KeyError + accidental drops)."""
+    existing = [c for c in cols if c in df.columns]
+    return df[existing].copy()
 
 
 # ----------------------------------------------------------------------
@@ -351,7 +334,7 @@ def render():
     # Snapshot status + publish
     # ------------------------------------------------------------------
     with st.spinner("Checking snapshot status…"):
-        runs_df = fetch_snapshot_status(conn, tenant_id)
+        runs_df = fetch_snapshot_status(conn, int(tenant_id))
 
     this_week = _get_week_start(pd.Timestamp.utcnow().normalize()).date()
 
@@ -371,7 +354,6 @@ def render():
     published_this_week = (latest_week == this_week)
 
     st.markdown("### Weekly Snapshot Status")
-
     st.markdown(
         f"""
 <div class="snapshot-cards">
@@ -400,7 +382,7 @@ def render():
         st.caption(f"Latest run at: {latest_run_at} | Triggered by: {latest_triggered_by}")
 
     # Publish button (admin only) — show only when missing
-    is_admin = _user_is_admin(tenant_id)
+    is_admin = _user_is_admin(int(tenant_id))
 
     if not published_this_week:
         if is_admin:
@@ -409,13 +391,10 @@ def render():
                     "This publishes a tenant-wide snapshot using **All Chains / All Salespeople / All Suppliers** "
                     "(no filters)."
                 )
-                confirm = st.checkbox(
-                    "I understand this publishes ALL chains (not my filters).",
-                    value=False,
-                )
+                confirm = st.checkbox("I understand this publishes ALL chains (not my filters).", value=False)
                 if st.button("Publish Weekly Gap Snapshot (All Chains)", disabled=not confirm):
                     with st.spinner("Publishing snapshot…"):
-                        ok, msg = publish_weekly_snapshot_all(conn,tenant_id)
+                        ok, msg = publish_weekly_snapshot_all(conn, int(tenant_id))
                     if ok:
                         st.success(msg)
                         st.rerun()
@@ -427,14 +406,16 @@ def render():
     st.markdown("---")
 
     # ------------------------------------------------------------------
-    # Load streak data
+    # Load streak data (shared data path with email)
     # ------------------------------------------------------------------
     with st.spinner("Loading gap streaks…"):
-        df = fetch_gap_streaks(conn, tenant_id)
+        df = fetch_current_streaks(conn=conn, tenant_id=int(tenant_id))
 
-    if df.empty:
+    if df is None or df.empty:
         st.info("No gap history found yet. Publish at least one weekly snapshot to start tracking.")
         return
+
+    df = _normalize_address_column(df)
 
     for col in ["SNAPSHOT_WEEK_START", "FIRST_GAP_WEEK", "LAST_GAP_WEEK"]:
         if col in df.columns:
@@ -453,7 +434,7 @@ def render():
     chains.insert(0, "All")
     suppliers.insert(0, "All")
 
-    max_streak = int(df["STREAK_WEEKS"].max() or 1)
+    max_streak = int(pd.to_numeric(df["STREAK_WEEKS"], errors="coerce").fillna(1).max() or 1)
 
     with st.form("gap_history_filters", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
@@ -474,7 +455,6 @@ def render():
 
         st.form_submit_button("Apply Filters")
 
-    # Apply filters
     filtered = df.copy()
 
     if salesperson_filter != "All":
@@ -484,7 +464,8 @@ def render():
     if supplier_filter != "All":
         filtered = filtered[filtered["SUPPLIER_NAME"] == supplier_filter]
 
-    filtered = filtered[filtered["STREAK_WEEKS"] >= min_streak]
+    filtered["STREAK_WEEKS"] = pd.to_numeric(filtered["STREAK_WEEKS"], errors="coerce").fillna(0).astype(int)
+    filtered = filtered[filtered["STREAK_WEEKS"] >= int(min_streak)]
 
     if filtered.empty:
         st.warning("No gaps match the selected filters and minimum streak length.")
@@ -501,22 +482,20 @@ def render():
         "CHAIN_NAME",
         "STORE_NUMBER",
         "STORE_NAME",
+        "ADDRESS",
         "SUPPLIER_NAME",
         "PRODUCT_NAME",
         "UPC",
         "_STREAK_COLOR",
     ]
 
-    display_df = filtered[display_cols].sort_values(
+    display_df = _safe_select(filtered, display_cols).sort_values(
         by=["SALESPERSON_NAME", "STREAK_WEEKS", "CHAIN_NAME", "STORE_NUMBER", "PRODUCT_NAME"],
         ascending=[True, False, True, True, True],
     )
 
     styled = _style_gap_table(display_df)
-
-    # Streamlit: use width="stretch" (not deprecated use_container_width)
     st.dataframe(styled, width="stretch")
-
     st.write(f"Showing {len(display_df)} gap streak(s).")
 
     # ------------------------------------------------------------------
@@ -533,20 +512,25 @@ def render():
         key="gap_streaks_csv",
     )
 
-    pdf_cols = [
-        "SALESPERSON_NAME",
-        "CHAIN_NAME",
-        "STORE_NUMBER",
-        "STORE_NAME",
-        "SUPPLIER_NAME",
-        "PRODUCT_NAME",
-        "STREAK_WEEKS",
-        "FIRST_GAP_WEEK",
-        "LAST_GAP_WEEK",
-    ]
-    pdf_df = csv_df[pdf_cols].copy()
+   # Canonical PDF contract lives in utils/pdf_reports.py
+    pdf_df = _safe_select(csv_df, GAP_HISTORY_PDF_COLUMNS)
 
-    pdf_bytes = build_gap_streaks_pdf(pdf_df, tenant_name=tenant_name)
+
+    DEBUG_PDF = False
+
+    if DEBUG_PDF:
+        st.write("DOWNLOAD pdf_df columns:", pdf_df.columns.tolist())
+        st.write(
+            "DOWNLOAD ADDRESS sample:",
+            pdf_df["ADDRESS"].head(10).tolist() if "ADDRESS" in pdf_df.columns else "NO ADDRESS COLUMN",
+        )
+
+
+    pdf_bytes = build_gap_streaks_pdf(
+        pdf_df,
+        tenant_name=tenant_name,
+        salesperson_name=None,  # page is multi-salesperson; keep header clean
+    )
 
     st.download_button(
         label="📄 Download Gap Streaks (PDF)",
