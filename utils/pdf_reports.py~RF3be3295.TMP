@@ -698,75 +698,70 @@ def build_gap_streaks_pdf(
     def _cell(val, is_center=False, max_len=60):
         txt = _truncate(val, max_len)
         style = cell_style_center if is_center else cell_style
-
         return Paragraph(txt, style)
 
     # -----------------------------
     # Weekly Execution Focus table (NEW)
     # -----------------------------
     def _execution_focus_table(exe: Optional[pd.DataFrame]) -> Optional[Table]:
-        """
-        Build the small Weekly Execution Focus table.
-        Returns a ReportLab Table or None if no data.
+    """
+    Build the small Weekly Execution Focus table.
+    Returns a ReportLab Table or None if no data.
+    """
+    if exe is None or exe.empty:
+        return None
 
-        IMPORTANT:
-        - Must be defined INSIDE build_gap_streaks_pdf() so salesperson_name is in scope.
-        """
-        if exe is None or exe.empty:
-            return None
+    r = exe.iloc[0].to_dict()
 
-        r = exe.iloc[0].to_dict()
+    salesman = str(r.get("SALESMAN") or salesperson_name or "")
+    in_sch = int(r.get("IN_SCHEMATIC") or 0)
+    fulfilled = int(r.get("FULFILLED") or 0)
+    gaps = int(r.get("GAPS") or 0)
+    placement_90 = float(r.get("PLACEMENT_NEEDED_FOR_90") or 0)
+    pct_exec = int(r.get("PCT_EXECUTION") or 0)
+    gaps_away = float(r.get("GAPS_AWAY_FROM_90") or 0)
 
-        salesman = str(r.get("SALESMAN") or salesperson_name or "")
-        in_sch = int(r.get("IN_SCHEMATIC") or 0)
-        fulfilled = int(r.get("FULFILLED") or 0)
-        gaps = int(r.get("GAPS") or 0)
-        placement_90 = float(r.get("PLACEMENT_NEEDED_FOR_90") or 0)
-        pct_exec = int(r.get("PCT_EXECUTION") or 0)
-        gaps_away = float(r.get("GAPS_AWAY_FROM_90") or 0)
+    data = [
+        [
+            "SALESMAN",
+            "IN SCHEMATIC",
+            "FULFILLED",
+            "GAPS",
+            "PLACEMENT NEEDED FOR 90%",
+            "% EXECUTION",
+            "GAPS AWAY FROM 90%",
+        ],
+        [
+            salesman,
+            f"{in_sch}",
+            f"{fulfilled}",
+            f"{gaps}",
+            f"{placement_90:,.1f}",
+            f"{pct_exec}%",
+            f"{gaps_away:,.1f}",
+        ],
+    ]
 
-        data = [
+    t = Table(data, hAlign="LEFT")
+    t.setStyle(
+        TableStyle(
             [
-                "SALESMAN",
-                "IN SCHEMATIC",
-                "FULFILLED",
-                "GAPS",
-                "PLACEMENT NEEDED FOR 90%",
-                "% EXECUTION",
-                "GAPS AWAY FROM 90%",
-            ],
-            [
-                salesman,
-                f"{in_sch}",
-                f"{fulfilled}",
-                f"{gaps}",
-                f"{placement_90:,.1f}",
-                f"{pct_exec}%",
-                f"{gaps_away:,.1f}",
-            ],
-        ]
-
-        t = Table(data, hAlign="LEFT")
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8F2EB")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 8),
-                    ("FONTSIZE", (0, 1), (-1, 1), 8),
-                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                    ("ALIGN", (0, 0), (0, -1), "LEFT"),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F8F2EB")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("FONTSIZE", (0, 1), (-1, 1), 8),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
         )
-        return t
-
+    )
+    return t
 
 
     # -----------------------------
@@ -859,8 +854,7 @@ def build_gap_streaks_pdf(
         ),
     ]
 
-    exec_table = _execution_focus_table(execution_df)
-
+    exec_table = _execution_table(execution_df)
     if exec_table is not None:
         story.append(exec_table)
         story.append(Spacer(1, 10))

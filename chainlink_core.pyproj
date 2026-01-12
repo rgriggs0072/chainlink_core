@@ -72,6 +72,7 @@
     <Compile Include="utils\forecasting_truck.py" />
     <Compile Include="utils\gap_history_helpers.py" />
     <Compile Include="utils\gap_history_mailer.py" />
+    <Compile Include="utils\gap_snapshot_pipeline.py" />
     <Compile Include="utils\home_ui_helpers.py" />
     <Compile Include="utils\load_company_data_helpers.py" />
     <Compile Include="utils\logout_utils.py" />

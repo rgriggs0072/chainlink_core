@@ -8,9 +8,9 @@ from io import BytesIO
 from utils.load_company_data_helpers import (
     format_sales_report, write_salesreport_to_snowflake,
     format_customers_report, write_customers_to_snowflake,
-    format_product_workbook, write_products_to_snowflake,
+    write_products_to_snowflake,
     format_supplier_by_county, write_supplier_by_county_to_snowflake,
-    download_workbook,
+    download_workbook,format_products_upload,
 
      # NEW added these imports 11/22/2025 ------
      # NEW CUSTOMERS UPLOAD/VALIDATION HELPERS
@@ -33,6 +33,10 @@ from utils.load_company_data_helpers import (
       # ➕ NEW Supplier by County
     generate_supplier_county_template,
     validate_supplier_county_upload,
+
+    generate_supplier_county_template,
+    create_supplier_county_pivot_template_workbook,
+    workbook_to_xlsx_bytes,
 )
 
 import inspect
@@ -384,39 +388,7 @@ def render_customers_section():
 
     st.markdown("---")
 
-    # ------------------------------------------------------------------
-    # Legacy Formatter (Optional helper for raw Encompass exports)
-    # ------------------------------------------------------------------
-    st.subheader("Legacy Formatter (Optional)")
-    with st.expander("Click to use the legacy Encompass Excel cleaner"):
-        st.markdown(
-            """
-            <small>
-            This legacy formatter cleans a raw Encompass Customers export and produces
-            a workbook with standardized headers and store numbers.<br>
-            You can download the formatted file and then copy/paste into the template
-            above to go through the validator.
-            </small>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        customers_file = st.file_uploader(
-            "Upload raw Customers Excel from Encompass (XLSX)",
-            type=["xlsx"],
-            key="customers_legacy_upload",
-        )
-
-        if customers_file:
-            try:
-                wb = openpyxl.load_workbook(customers_file)
-                with st.spinner("Formatting Customers (legacy helper)..."):
-                    formatted = format_customers_report(wb)
-                if formatted:
-                    download_workbook(formatted, "Formatted_Customers.xlsx")
-                    st.success("Legacy Customers file formatted. Download and/or paste into the template above.")
-            except Exception as e:
-                st.error(f"Error formatting Customers (legacy): {e}")
+   
 
 
 
@@ -426,25 +398,29 @@ def render_products_section():
     """
     Products Upload / Validation Section
 
-    Overview:
-    - Recommended flow (template-based):
-        1) Download the Products template (CSV).
-        2) Map/paste Source data into template.
-        3) Upload for validation via validate_products_upload().
-        4) If clean, upload to Snowflake with write_products_to_snowflake().
+    Page overview for future devs:
+    - Single canonical flow (no legacy formatter):
+        1) User downloads Products template (CSV).
+        2) User can either:
+            - paste into template, OR
+            - upload the raw Encompass export directly
+        3) App formats (header mapping + light cleanup) via format_products_upload().
+        4) App validates via validate_products_upload() -> returns (cleaned_df, errors, warnings).
+        5) If no errors, user uploads to Snowflake via write_products_to_snowflake().
+           Loader is staging-first so we never "truncate then fail" and leave PRODUCTS empty.
 
-    - Legacy helper:
-        - Optional Excel formatter for raw exports.
-        - Produces a cleaned workbook that can be used as input
-          into the template/validator flow.
+    Notes:
+    - CARRIER_UPC:
+        - Dashes/spaces are removed during cleaning.
+        - Blank UPCs are allowed (warning) and will load as NULL.
+        - Placeholder UPC '999999999999' is blocked (error).
     """
 
-    # ------------------------------------------------------------------
-    # Recommended: Products Validator (NEW flow)
-    # ------------------------------------------------------------------
     st.subheader("Products Table Validator (Recommended)")
 
+    # ------------------------------------------------------------------
     # Step 0: Download template
+    # ------------------------------------------------------------------
     st.markdown("**Step 0:** Download the official Products template and copy your source data into it.")
     products_template_df = generate_products_template()
     tmpl_csv = products_template_df.to_csv(index=False).encode("utf-8")
@@ -465,7 +441,7 @@ def render_products_section():
         • <b>Supplier</b> → <b>SUPPLIER</b><br>
         • <b>Product Name</b> → <b>PRODUCT_NAME</b><br>
         • <b>Package</b> → <b>PACKAGE</b><br>
-        • <b>Carrier UPC</b> → <b>CARRIER_UPC</b> (digits only, no spaces or dashes)<br>
+        • <b>Carrier UPC</b> → <b>CARRIER_UPC</b> (we auto-remove dashes/spaces; must be digits ≤ 20)<br>
         • <b>Product Manager</b> → <b>PRODUCT_MANAGER</b> (optional)
         </small>
         """,
@@ -474,82 +450,78 @@ def render_products_section():
 
     st.markdown("---")
 
-    # Step 1: Upload completed template file for validation
-    st.markdown("**Step 1:** Upload Products template (CSV or Excel) for validation and load.")
-    products_final = st.file_uploader(
-        "Upload Products template (CSV or XLSX)",
+    # ------------------------------------------------------------------
+    # Step 1: Upload (template OR raw export) -> format -> validate -> preview -> upload
+    # ------------------------------------------------------------------
+    st.markdown("**Step 1:** Upload Products file (CSV or Excel) for validation and load.")
+    products_file = st.file_uploader(
+        "Upload Products file (CSV or XLSX)",
         type=["csv", "xlsx"],
-        key="products_final_upload_new",
+        key="products_upload",
     )
 
-    if products_final:
-        try:
-            # Read into DataFrame with dtype=str to avoid UPC/ID mangling
-            if products_final.name.lower().endswith(".csv"):
-                raw_df = pd.read_csv(products_final, dtype=str)
-            else:
-                # NOTE: no sheet_name hardcoding – just take the first sheet
-                raw_df = pd.read_excel(products_final, engine="openpyxl", dtype=str)
+    if not products_file:
+        st.markdown("---")
+        return
 
-            # Debug hook if needed:
-            # st.write("DEBUG PRODUCT_ID RAW:", raw_df.get("PRODUCT_ID", []))
+    try:
+        # Read into DataFrame with dtype=str to avoid UPC/ID mangling
+        if products_file.name.lower().endswith(".csv"):
+            raw_df = pd.read_csv(products_file, dtype=str)
+        else:
+            # Use the first sheet by default
+            raw_df = pd.read_excel(products_file, engine="openpyxl", dtype=str)
 
-            # Validate/clean: handles header normalization, PRODUCT_ID + UPC rules, etc.
-            cleaned_df, errors = validate_products_upload(raw_df)
+        # 1) Canonical formatting (header mapping + ensure required columns exist)
+        formatted_df = format_products_upload(raw_df)
 
-            if errors:
-                st.error("Validation failed. Please fix these issues and re-upload:")
-                for msg in errors:
-                    st.write(f"- {msg}")
-                st.dataframe(cleaned_df.head(50), width='stretch')
-            else:
-                st.success("Validation passed. Preview of cleaned Products data:")
-                st.dataframe(cleaned_df.head(50),  width='stretch')
+        # 2) Validation (returns cleaned_df, errors, warnings)
+        cleaned_df, errors, warnings = validate_products_upload(formatted_df)
 
-                if st.button("Upload Products to Snowflake", key="upload_products_btn_new"):
-                    with st.spinner("Uploading Products to Snowflake..."):
-                        write_products_to_snowflake(cleaned_df)
-                    st.success("Products table updated successfully.")
+        # 3) Hard stop on errors
+        if errors:
+            st.error("Validation failed. Please fix these issues and re-upload:")
+            for msg in errors:
+                st.write(f"- {msg}")
 
-        except Exception as e:
-            st.error(f"Error validating/uploading Products: {e}")
+            # Helpful view: show invalid UPC rows if present
+            if "CARRIER_UPC" in cleaned_df.columns:
+                bad_upc_mask = (
+                    cleaned_df["CARRIER_UPC"].isna()
+                    | (cleaned_df["CARRIER_UPC"] == "")
+                    | (cleaned_df["CARRIER_UPC"] == "999999999999")
+                )
+                bad_rows = cleaned_df.loc[bad_upc_mask].copy()
+                if not bad_rows.empty:
+                    st.warning(f"Showing {min(len(bad_rows), 200)} row(s) with missing/invalid UPC (first 200):")
+                    st.dataframe(bad_rows.head(200), width="stretch")
+
+            st.dataframe(cleaned_df.head(50), width="stretch")
+            st.markdown("---")
+            return
+
+        # 4) Non-fatal warnings
+        if warnings:
+            st.warning("Validation warnings (non-fatal):")
+            for w in warnings:
+                st.write(f"- {w}")
+
+        # 5) Preview of what will load
+        st.success("Validation passed. Preview of cleaned Products data:")
+        st.dataframe(cleaned_df.head(50), width="stretch")
+
+        # 6) Upload button
+        if st.button("Upload Products to Snowflake", key="upload_products_btn"):
+            with st.spinner("Uploading Products to Snowflake..."):
+                write_products_to_snowflake(cleaned_df)
+            st.success("Products table updated successfully.")
+
+    except Exception as e:
+        st.error(f"Error validating/uploading Products: {e}")
 
     st.markdown("---")
 
-    # ------------------------------------------------------------------
-    # Legacy Formatter (Optional helper for raw Excel exports)
-    # ------------------------------------------------------------------
-    st.subheader("Legacy Products Formatter (Optional)")
-    with st.expander("Click to use the legacy Products Excel cleaner"):
-        st.markdown(
-            """
-            <small>
-            This legacy formatter cleans a raw Products Excel export and produces
-            a workbook with standardized columns.<br>
-            You can download the formatted file and then paste its data into the template
-            above to go through the validator.
-            </small>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        products_file = st.file_uploader(
-            "Upload raw Products Excel (XLSX)",
-            type=["xlsx"],
-            key="products_upload_legacy",
-        )
-
-        if products_file:
-            try:
-                wb = openpyxl.load_workbook(products_file)
-                with st.spinner("Formatting Products (legacy helper)..."):
-                    formatted = format_product_workbook(wb)
-                if formatted:
-                    download_workbook(formatted, "Formatted_Products.xlsx")
-                    st.success("Legacy Products file formatted. Download and/or paste into the template above.")
-            except Exception as e:
-                st.error(f"Error formatting Products (legacy): {e}")
-
+   
 
 
 
@@ -581,10 +553,11 @@ def render_supplier_county_section():
     st.subheader("Supplier by County Validator (Recommended)")
 
     # -----------------------------------------------------
-    # Step 0 – Template Download
+    # Step 0 – Template Downloads
     # -----------------------------------------------------
-    st.markdown("**Step 0:** Download Supplier by County template and paste your data into it.")
+    st.markdown("**Step 0:** Download a template (standard rows OR pivot).")
 
+    # Standard (3-column) CSV template
     tmpl = generate_supplier_county_template()
     tmpl_csv = tmpl.to_csv(index=False).encode("utf-8")
 
@@ -596,24 +569,18 @@ def render_supplier_county_section():
         key="supplier_cty_template_download",
     )
 
-    st.markdown(
-        """
-        <small>
-        Required columns:<br>
-        • <b>SUPPLIER</b> – must not be blank<br>
-        • <b>COUNTY</b> – must not be blank<br>
-        • <b>STATUS</b> – must be <b>Yes</b> or <b>No</b><br>
-        <br>
-        You can either:
-        <br>• Use this template directly, or
-        <br>• Upload the original pivot export (with 'Supplier / County' + county columns);
-             the app will auto-transform it to the 3-column layout.
-        </small>
-        """,
-        unsafe_allow_html=True,
+    # Pivot-style XLSX template
+    pivot_wb = create_supplier_county_pivot_template_workbook()
+    pivot_bytes = workbook_to_xlsx_bytes(pivot_wb)
+
+    st.download_button(
+        "📥 Download Supplier by County Pivot Template (XLSX)",
+        data=pivot_bytes,
+        file_name="supplier_by_county_pivot_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="supplier_cty_pivot_template_download",
     )
 
-    st.markdown("---")
 
     # -----------------------------------------------------
     # Step 1 – Upload + Auto Validation
@@ -678,25 +645,4 @@ def render_supplier_county_section():
 
     st.markdown("---")
 
-    # -----------------------------------------------------
-    # Legacy Pivot Formatter (Optional – manual helper)
-    # -----------------------------------------------------
-    st.subheader("Legacy Supplier by County Formatter (Optional)")
-    with st.expander("Click to use legacy pivot → normalized formatter"):
-
-        legacy_file = st.file_uploader(
-            "Upload raw Supplier by County pivot Excel (XLSX)",
-            type=["xlsx"],
-            key="supplier_cty_legacy_upload",
-        )
-
-        if legacy_file:
-            try:
-                with st.spinner("Formatting legacy Supplier by County pivot..."):
-                    legacy_df = format_supplier_by_county(legacy_file)
-
-                if legacy_df is not None:
-                    st.dataframe(legacy_df.head(50),  width='stretch')
-                    st.success("Legacy file formatted. Paste results into the template above if needed.")
-            except Exception as e:
-                st.error(f"❌ Error formatting legacy file: {e}")
+   

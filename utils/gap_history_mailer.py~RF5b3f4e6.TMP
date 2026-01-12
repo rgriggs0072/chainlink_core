@@ -173,48 +173,45 @@ def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> 
     - No "sql % params" logging (breaks %s + tuples).
     """
     sql = """
-    WITH latest AS (
-      SELECT TENANT_ID, MAX(SNAPSHOT_WEEK_START) AS SNAPSHOT_WEEK_START
-      FROM GAP_REPORT_SNAPSHOT
-      WHERE TENANT_ID = %s
-      GROUP BY TENANT_ID
-    ),
-    base AS (
-      SELECT s.*
-      FROM GAP_REPORT_SNAPSHOT s
-      JOIN latest l
-        ON l.TENANT_ID = s.TENANT_ID
-       AND l.SNAPSHOT_WEEK_START = s.SNAPSHOT_WEEK_START
-      WHERE s.TENANT_ID = %s
-        AND s.SALESPERSON_NAME = %s
-        AND COALESCE(s.IN_SCHEMATIC, FALSE) = TRUE
-    )
-    SELECT
-      SALESPERSON_NAME AS SALESMAN,
-      COUNT(*) AS IN_SCHEMATIC,
-      SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) AS FULFILLED,
-      SUM(IFF(COALESCE(IS_GAP, FALSE) = TRUE,  1, 0)) AS GAPS,
-      (0.9 * COUNT(*)) AS PLACEMENT_NEEDED_FOR_90,
-      ROUND(
-        (SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) / NULLIF(COUNT(*), 0)) * 100),
-        0
-       AS PCT_EXECUTION,
-      GREATEST(
-        0,
-        (0.9 * COUNT(*)) - SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0))
-      ) AS GAPS_AWAY_FROM_90
-    FROM base
-    GROUP BY SALESPERSON_NAME
-    """.strip()
+WITH latest AS (
+  SELECT TENANT_ID, MAX(SNAPSHOT_WEEK_START) AS SNAPSHOT_WEEK_START
+  FROM GAP_REPORT_SNAPSHOT
+  WHERE TENANT_ID = %s
+  GROUP BY TENANT_ID
+),
+base AS (
+  SELECT s.*
+  FROM GAP_REPORT_SNAPSHOT s
+  JOIN latest l
+    ON l.TENANT_ID = s.TENANT_ID
+   AND l.SNAPSHOT_WEEK_START = s.SNAPSHOT_WEEK_START
+  WHERE s.TENANT_ID = %s
+    AND s.SALESPERSON_NAME = %s
+    AND COALESCE(s.IN_SCHEMATIC, FALSE) = TRUE
+)
+SELECT
+  SALESPERSON_NAME AS SALESMAN,
+  COUNT(*) AS IN_SCHEMATIC,
+  SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) AS FULFILLED,
+  SUM(IFF(COALESCE(IS_GAP, FALSE) = TRUE,  1, 0)) AS GAPS,
+  (0.9 * COUNT(*)) AS PLACEMENT_NEEDED_FOR_90,
+  ROUND(
+    (SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) / NULLIF(COUNT(*), 0)) * 100),
+    0
+  ) AS PCT_EXECUTION,
+  GREATEST(
+    0,
+    (0.9 * COUNT(*)) - SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0))
+  ) AS GAPS_AWAY_FROM_90
+FROM base
+GROUP BY SALESPERSON_NAME
+""".strip()
 
     params = (
         int(tenant_id),
         int(tenant_id),
         str(salesperson_name or "").strip(),
     )
-
-    #print("EXECUTION FOCUS SQL:\n", sql)
-
 
     with con.cursor() as cur:
         cur.execute(sql, params)

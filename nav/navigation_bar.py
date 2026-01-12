@@ -43,7 +43,7 @@ def render_navigation(*, show_admin: bool, show_ai: bool = False) -> str:
 def render_reports_submenu() -> str:
     return option_menu(
         menu_title="",
-        options=["Gap Report", "Email Gap Report", "Gap History", "Data Exports"],
+        options=["Gap Report", "Email Gap Report",  "Data Exports"],
         icons=["file-bar-graph", "envelope", "clock-history", "file-earmark-text"],
         menu_icon="bar-chart",
         default_index=0,

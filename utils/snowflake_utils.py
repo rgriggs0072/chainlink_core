@@ -344,7 +344,8 @@ def fetch_supplier_names():
 
 
 
-def create_gap_report(conn, salesperson, store, supplier):
+def create_gap_report_LEGACY_DO_NOT_USE(conn, salesperson, store, supplier):
+    raise RuntimeError("Legacy function. Use utils.gap_report_builder.create_gap_report instead.")
     """
     Retrieves data from a Snowflake view and creates a button to download the data as a CSV report.
     """

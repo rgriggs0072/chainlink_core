@@ -31,7 +31,8 @@ import streamlit as st
 from utils.pdf_reports import build_gap_streaks_pdf, GAP_HISTORY_PDF_COLUMNS
 from utils.gap_history_helpers import save_gap_snapshot, normalize_upc
 from utils.reports_utils import create_gap_report
-from utils.gap_history_emailer import fetch_current_streaks
+from utils.gap_history_mailer import fetch_current_streaks
+
 
 # Optional admin gate (use if you have it; otherwise we fall back gracefully)
 try:

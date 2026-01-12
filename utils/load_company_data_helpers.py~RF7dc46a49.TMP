@@ -1,20 +1,5 @@
 ﻿# utils/load_company_data_helpers.py
 """
-
-
-⚠️ IMPORTANT – DO NOT PARTIALLY EDIT THIS FILE
-
-This module is intentionally centralized and order-sensitive.
-If refactoring:
-- Keep ALL validators + writers together
-- Never remove a write_* function without updating load_company_sections.py
-- Always re-run:
-    python -c "from app_pages.load_company_sections import *"
-before committing
-
-Last verified: Supplier County + Products + Customers + Sales all green.
-
-
 Load Company Data Helpers (Chainlink Core)
 
 Overview for future devs:
@@ -38,8 +23,6 @@ Snowflake write patterns:
 Assumptions:
 - st.session_state["toml_info"] and st.session_state["tenant_id"] exist (login bootstrap)
 """
-
-
 
 from __future__ import annotations
 
