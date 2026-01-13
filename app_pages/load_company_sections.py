@@ -1,93 +1,80 @@
-﻿# ------------- load_company_sections.py -------------
-
-import streamlit as st
+﻿import streamlit as st
 from openpyxl import Workbook
-import openpyxl
 import pandas as pd
 from io import BytesIO
-from utils.load_company_data_helpers import (
-    format_sales_report, write_salesreport_to_snowflake,
-    format_customers_report, write_customers_to_snowflake,
-    write_products_to_snowflake,
-    format_supplier_by_county, write_supplier_by_county_to_snowflake,
-    download_workbook,format_products_upload,
 
-     # NEW added these imports 11/22/2025 ------
-     # NEW CUSTOMERS UPLOAD/VALIDATION HELPERS
+from utils.load_company_data_helpers import (
+    # --- Uploaders (template-safe) ---
+    write_salesreport_to_snowflake,
+    write_customers_to_snowflake,
+    write_products_to_snowflake,
+    write_supplier_by_county_to_snowflake,
+
+    # --- Legacy formatters (keep only if still used in other sections) ---
+    format_customers_report,
+    format_supplier_by_county,
+
+    # --- Products helpers (still used) ---
+    format_products_upload,
+
+    # --- NEW CUSTOMERS UPLOAD/VALIDATION HELPERS ---
     generate_customers_template,
     format_customers_upload,
     validate_customers_upload,
     validate_customers_against_existing_chains,
 
-    # NEW SALES_REPORT UPLOAD/VALIDATION HELPERS
+    # --- NEW SALES_REPORT UPLOAD/VALIDATION HELPERS ---
     generate_sales_template,
     format_sales_upload,
     validate_sales_upload,
-    validate_sales_against_customers,
+    #validate_sales_against_customers,
 
-
-    # NEW PRODUCTS UPLOAD/VALIDATION HELPERS  ⬅️ ADD THIS BLOCK
+    # --- NEW PRODUCTS UPLOAD/VALIDATION HELPERS ---
     generate_products_template,
     validate_products_upload,
 
-      # ➕ NEW Supplier by County
+    # --- Supplier by County helpers ---
     generate_supplier_county_template,
     validate_supplier_county_upload,
-
-    generate_supplier_county_template,
     create_supplier_county_pivot_template_workbook,
     workbook_to_xlsx_bytes,
 )
-
-import inspect
-
-# st.write(
-#     "DEBUG PRODUCTS VALIDATOR LOCATION:",
-#     inspect.getsourcefile(validate_products_upload)
-# )
-
-
-
 
 
 # ------------------- SALES -------------------
 def render_sales_section():
     """
-    Sales Report Upload Section
+    Sales Report Upload / Validation Section (Single Path)
 
-    New flow (recommended):
-      1) Download Sales template (CSV)
-      2) Paste / map Source data into template
-      3) Upload for validation + preview
-      4) On success, upload to Snowflake SALES_REPORT
+    Overview for future devs:
+    - This section supports ONE upload flow only (template-based).
+    - Legacy formatter/uploader intentionally removed to reduce risk and maintenance.
 
-    Legacy flow (temporary):
-      - Old Excel formatter + upload path kept in an expander.
+    Flow:
+        1) Download Sales template (XLSX)
+        2) Upload completed template (XLSX)
+        3) Normalize + validate using SALES_SCHEMA
+        4) Cross-check STORE_NUMBER + STORE_NAME against CUSTOMERS
+        5) Safe upload (TEMP stage -> tenant-scoped swap)
     """
     st.subheader("Sales Report Validator (Recommended)")
     st.caption(
-        "Use the template-based flow below to ensure clean, repeatable uploads "
-        "for the multi-tenant app."
+        "Download the template, paste your source data into it, upload for validation, "
+        "then safely load into Snowflake (stage → swap)."
     )
 
+    # -------------------------
+    # Step 0: Download template
+    # -------------------------
+    st.markdown("**Step 0:** Download the official Sales Report template (XLSX).")
 
-
-        # --- Template download ---
     template_df = generate_sales_template()
 
-    # Build a real XLSX using openpyxl (no xlsxwriter dependency)
     wb = Workbook()
     ws = wb.active
     ws.title = "Sales_Template"
-
-    # Write headers
     ws.append(list(template_df.columns))
 
-    # Write rows
-    for row in template_df.itertuples(index=False, name=None):
-        ws.append(list(row))
-
-    # Save workbook to memory
     xlsx_buffer = BytesIO()
     wb.save(xlsx_buffer)
     xlsx_buffer.seek(0)
@@ -100,149 +87,89 @@ def render_sales_section():
         key="sales_template_download",
     )
 
+    st.markdown("---")
 
-    st.markdown("### Upload Completed Sales Template")
+    # -----------------------------
+    # Step 1: Upload completed file
+    # -----------------------------
+    st.markdown("**Step 1:** Upload the completed Sales template (XLSX) for validation and load.")
+
     uploaded = st.file_uploader(
-        "Upload Sales Report file based on the template",
-        type=["xlsx"],  # keep XLSX-only for now
+        "Upload Sales Report template (XLSX)",
+        type=["xlsx"],
         key="sales_validator_upload",
     )
 
-    cleaned_df = None
-  
+    if uploaded is None:
+        return
 
-    if uploaded is not None:
-        # --- Step 1: Load raw file ---
-        try:
-            # XLSX only (user opens XLSX template in Excel, saves as xlsx, uploads)
-            raw_df = pd.read_excel(uploaded, engine="openpyxl")
-        except Exception as e:
-            st.error(f"❌ Failed to read Sales file: {e}")
-            return
+    # -------------------------
+    # Step 2: Read raw XLSX
+    # -------------------------
+    try:
+        raw_df = pd.read_excel(uploaded, engine="openpyxl")
+    except Exception as e:
+        st.error(f"❌ Failed to read Sales file: {e}")
+        return
 
-        # --- UPC normalization to avoid Excel scientific notation issues ---
-        if "UPC" in raw_df.columns:
-            def _normalize_excel_upc(val):
-                """
-                Normalize UPC values coming from Excel:
-                - If numeric (float/int): drop decimals, keep full integer (no sci-notation)
-                - If string: strip whitespace
-                - If NaN: return None
-                """
-                if pd.isna(val):
-                    return None
-                if isinstance(val, (int, float)):
-                    # Excel may give 8.50001E+11; int() keeps all digits
-                    return f"{int(val):d}"
-                return str(val).strip()
+    # -------------------------
+    # Step 3: Normalize + validate
+    # -------------------------
+    try:
+        formatted_df = format_sales_upload(raw_df)
+    except Exception as e:
+        st.error(f"❌ Error during Sales normalization: {e}")
+        return
 
-            raw_df["UPC"] = raw_df["UPC"].apply(_normalize_excel_upc)
+    result = validate_sales_upload(formatted_df)
 
-        st.write("Raw uploaded data (first 10 rows):")
-        # st.dataframe(raw_df.head(10), width='strtch')
+    all_errors: list[str] = []
+    all_warnings: list[str] = []
 
-        # --- Step 2: Light formatting / normalization ---
-        try:
-            formatted_df = format_sales_upload(raw_df)
-        except Exception as e:
-            st.error(f"❌ Error during Sales normalization: {e}")
-            return
+    if result.errors:
+        all_errors.extend(result.errors)
+    if result.warnings:
+        all_warnings.extend(result.warnings)
 
-        # --- Step 3: Schema validation (types, required fields, etc.) ---
-        result = validate_sales_upload(formatted_df)
+    # -----------------------------------------
+    # Step 4: Cross-check against CUSTOMERS
+    # -----------------------------------------
+    # if result.cleaned_df is not None:
+    #     cross_errors, cross_warnings = validate_sales_against_customers(result.cleaned_df)
+    #     if cross_errors:
+    #         all_errors.extend(cross_errors)
+    #     if cross_warnings:
+    #         all_warnings.extend(cross_warnings)
 
-        all_errors: list[str] = []
-        all_warnings: list[str] = []
+    # if all_warnings:
+    #     st.info("⚠️ Validation warnings (non-fatal):")
+    #     for msg in all_warnings:
+    #         st.markdown(f"- {msg}")
 
-        if result.errors:
-            all_errors.extend(result.errors)
-        if result.warnings:
-            all_warnings.extend(result.warnings)
+    # if all_errors:
+    #     st.error("❌ Validation failed. Please fix these issues and re-upload:")
+    #     for msg in all_errors:
+    #         st.markdown(f"- {msg}")
+    #     return
 
-        # --- Step 4: Cross-check against CUSTOMERS (store_number consistency) ---
-        if result.cleaned_df is not None:
-            cross_errors, cross_warnings = validate_sales_against_customers(
-                result.cleaned_df
-            )
-            if cross_errors:
-                all_errors.extend(cross_errors)
-            if cross_warnings:
-                all_warnings.extend(cross_warnings)
+    cleaned_df = result.cleaned_df
+    st.success("✅ Validation passed. Preview of cleaned Sales data:")
+    st.dataframe(cleaned_df.head(25), width="stretch")
 
-        # --- Show validation messages ---
-        if all_warnings:
-            st.info("⚠️ Validation warnings (non-fatal):")
-            for msg in all_warnings:
-                st.markdown(f"- {msg}")
-
-        if all_errors:
-            st.error("❌ Validation failed. Please fix these issues and re-upload:")
-            for msg in all_errors:
-                st.markdown(f"- {msg}")
-            return
-
-        # If we're here, validation passed
-        cleaned_df = result.cleaned_df
-        st.success("✅ Validation passed. Preview of cleaned Sales data:")
-        st.dataframe(cleaned_df.head(20), width='stretch')
-
-        # --- Final upload action ---
-        if st.button(
-            "Upload validated Sales Report to Snowflake",
-            key="upload_sales_validated",
-        ):
-            try:
-                write_salesreport_to_snowflake(cleaned_df)
-            except Exception as e:
-                st.error(f"❌ Sales upload failed during write step: {e}")
-
-    # ------------------------------------------------------------------
-    # Legacy path kept for rollback / comparison (Excel formatter)
-    # ------------------------------------------------------------------
     st.markdown("---")
-    with st.expander("Legacy: Excel Sales Formatter (Encompass)", expanded=False):
-        st.subheader("Format Sales Report (Legacy)")
 
-        legacy_file = st.file_uploader(
-            "Upload legacy Sales Report Excel (Encompass export)",
-            type=["xlsx"],
-            key="sales_upload_legacy",
-        )
-    
-        if legacy_file:
-            try:
-                wb = openpyxl.load_workbook(legacy_file)
-                with st.spinner("Formatting Sales Report (legacy path)..."):
-                    formatted = format_sales_report(wb)
-                if formatted:
-                    download_workbook(formatted, "Formatted_Sales_Report.xlsx")
-            except Exception as e:
-                st.error(f"Error formatting Sales Report (legacy): {e}")
+    # -------------------------
+    # Step 5: Safe upload
+    # -------------------------
+    if st.button("Upload validated Sales Report to Snowflake", key="upload_sales_validated"):
+        try:
+            with st.spinner("Uploading Sales Report safely (stage → swap)…"):
+                write_salesreport_to_snowflake(cleaned_df)
+            st.success("✅ Sales Report updated successfully.")
+        except Exception as e:
+            st.error(f"❌ Sales upload failed: {e}")
 
-        st.markdown("---")
-        st.subheader("Upload Legacy Formatted Sales Report to Database")
 
-        sales_final = st.file_uploader(
-            "Upload legacy formatted Sales Report",
-            type=["xlsx"],
-            key="sales_final_upload_legacy",
-        )
-
-        if sales_final:
-            try:
-                df_legacy = pd.read_excel(
-                    sales_final,
-                    engine="openpyxl",
-                    sheet_name="SALES REPORT",
-                )
-                st.dataframe(df_legacy.head(), width='stretch')
-                if st.button(
-                    "Upload legacy Sales to Database",
-                    key="upload_sales_legacy_btn",
-                ):
-                    write_salesreport_to_snowflake(df_legacy)
-            except Exception as e:
-                st.error(f"Error uploading legacy Sales Report: {e}")
 
 
 

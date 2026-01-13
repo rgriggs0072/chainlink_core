@@ -196,9 +196,9 @@ def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> 
       SUM(IFF(COALESCE(IS_GAP, FALSE) = TRUE,  1, 0)) AS GAPS,
       (0.9 * COUNT(*)) AS PLACEMENT_NEEDED_FOR_90,
       ROUND(
-        (SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) / NULLIF(COUNT(*), 0)) * 100),
+        (SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0)) / NULLIF(COUNT(*), 0)) * 100,
         0
-       AS PCT_EXECUTION,
+       ) AS PCT_EXECUTION,
       GREATEST(
         0,
         (0.9 * COUNT(*)) - SUM(IFF(COALESCE(IS_GAP, FALSE) = FALSE, 1, 0))

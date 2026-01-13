@@ -1,4 +1,4 @@
-# utils/validation_helpers.py
+# utils/class_validation_helpers.py
 """
 Generic DataFrame validation helpers for Chainlink Core uploads.
 
@@ -39,6 +39,7 @@ class ColumnRule:
     dtype: str = "str"  # 'str', 'int', 'float', 'date'
     allow_blank: bool = False
     validators: List[Callable[[pd.Series], List[str]]] = field(default_factory=list)
+    warning_validators: List[Callable[[pd.Series], List[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -154,6 +155,11 @@ def validate_dataframe(df: pd.DataFrame, schema: List[ColumnRule]) -> Validation
         for validator in col_rule.validators:
             col_errors = validator(series)
             errors.extend(col_errors)
+
+        # Run any warning validators (non-fatal)
+        for w_validator in col_rule.warning_validators:
+            col_warnings = w_validator(series)
+            warnings.extend(col_warnings)
 
         df[col] = series
 

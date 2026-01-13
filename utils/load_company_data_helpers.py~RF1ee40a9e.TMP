@@ -1316,18 +1316,10 @@ def write_salesreport_to_snowflake(df: pd.DataFrame) -> None:
             (tenant_id, now_ts, today_date),
         )
 
-        # Commit but do NOT close the connection yet (see note below)
-        try:
-            conn.commit()
-        except Exception:
-            pass
-
-        # Run the refresh while the connection is still alive
-        _run_gap_report_refresh(conn)
-
-        # Now do your normal finalize/close messaging
         _finalize_transaction(cursor, conn, "✅ Sales report uploaded (staged and replaced successfully).")
-
+        # Refresh GAP metrics so dashboards update immediately
+        _run_gap_report_refresh(conn)
+        st.info("✅ GAP metrics refresh triggered (PROCESS_GAP_REPORT).")
 
 
     except Exception as e:

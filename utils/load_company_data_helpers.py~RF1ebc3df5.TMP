@@ -62,10 +62,6 @@ from sf_connector.service_connector import connect_to_tenant_snowflake
 from utils.class_validation_helpers import ColumnRule, ValidationResult, validate_dataframe
 
 
-def validate_sales_upload(df: pd.DataFrame) -> ValidationResult:
-    """Schema validation via validate_dataframe()."""
-    return validate_dataframe(df, SALES_SCHEMA)   
-
 # =============================================================================
 # ✅ COMMON CONSTANTS
 # =============================================================================
@@ -290,9 +286,6 @@ def remove_total_rows_worksheet(ws):
         ws.delete_rows(r, 1)
 
 
- 
-
-
 def format_sales_report(workbook):
     """
     Legacy formatter for Encompass Sales Report export -> canonical SALES_REPORT layout.
@@ -300,8 +293,6 @@ def format_sales_report(workbook):
     Output columns:
         STORE_NUMBER, STORE_NAME, ADDRESS, SALESPERSON, PRODUCT_NAME, UPC, PURCHASED_YES_NO
     """
-   
-
     try:
         sheet_name = "SALES REPORT" if "SALES REPORT" in workbook.sheetnames else workbook.sheetnames[0]
 
@@ -684,34 +675,30 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
         "storenumber": "STORE_NUMBER",
         "chainstorenumber": "STORE_NUMBER",
 
-        # 🔴 ADD THIS
-        "customername": "STORE_NAME",
-
         "storename": "STORE_NAME",
+        "store name": "STORE_NAME",  # won't match after _norm, but kept for clarity
 
         "shippingaddress": "ADDRESS",
+        "address": "ADDRESS",
 
         "salesmanassigned": "SALESPERSON",
+        "salesman": "SALESPERSON",
+        "salesperson": "SALESPERSON",
+        "salesrep": "SALESPERSON",
 
         "productname": "PRODUCT_NAME",
+        "product": "PRODUCT_NAME",
+        "itemdescription": "PRODUCT_NAME",
+        "description": "PRODUCT_NAME",
 
         "carrierupc": "UPC",
-
-        # explicitly ignore Buyer Count %
-        "buyercount%": None,
+        "upc": "UPC",
+        "barcode": "UPC",
+        "upccode": "UPC",
     }
-
 
     # Build mapping: current df col -> canonical
     col_map: dict[str, str] = {}
-
-    # Drop columns explicitly mapped to None (e.g., Buyer Count %)
-    cols_to_drop = [c for c, tgt in col_map.items() if tgt is None]
-    if cols_to_drop:
-        df = df.drop(columns=cols_to_drop)
-        for c in cols_to_drop:
-            col_map.pop(c, None)
-
 
     # Special: Buyer Count (dynamic date range in header)
     buyer_count_col = None
@@ -1316,42 +1303,13 @@ def write_salesreport_to_snowflake(df: pd.DataFrame) -> None:
             (tenant_id, now_ts, today_date),
         )
 
-        # Commit but do NOT close the connection yet (see note below)
-        try:
-            conn.commit()
-        except Exception:
-            pass
-
-        # Run the refresh while the connection is still alive
-        _run_gap_report_refresh(conn)
-
-        # Now do your normal finalize/close messaging
-        _finalize_transaction(cursor, conn, "✅ Sales report uploaded (staged and replaced successfully).")
-
-
+        _finalize_transaction(cursor, conn, "✅ Sales report uploaded (TEMP stage, tenant-safe replace).")
 
     except Exception as e:
         _rollback_transaction(conn, cursor)
         st.error(f"❌ Sales report upload failed (target protected): {e}")
 
 
-def _run_gap_report_refresh(conn) -> None:
-    """
-    Trigger GAP metrics rebuild after data uploads that affect GAP_REPORT.
-
-    Notes:
-    - Runs after SALES_REPORT upload commits successfully.
-    - Does NOT raise to caller (we don't want to undo a successful upload).
-    """
-    try:
-        cur = conn.cursor()
-        try:
-            cur.execute("CALL PROCESS_GAP_REPORT()")
-        finally:
-            cur.close()
-    except Exception as e:
-        # Don't fail the upload; just warn
-        st.warning(f"Sales uploaded, but GAP metrics refresh failed: {e}")
 
 
 # =============================================================================
