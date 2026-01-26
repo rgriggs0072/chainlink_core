@@ -1,5 +1,5 @@
-﻿# ------------------------- EMAIL_GAP_REPORT.PY ------------------------------
-
+﻿# ------------------------- app_pages/email_gap_report.py ------------------------------
+# -*- coding: utf-8 -*-
 """
 Gap History Emailer (PDF per salesperson)
 
@@ -10,9 +10,21 @@ and CCs their manager (from SALES_CONTACTS).
 
 Hard rules
 ----------
-- Does NOT publish snapshots
-- Does NOT insert snapshot data
-- Assumes snapshots already exist
+- Does NOT publish snapshots automatically.
+- Assumes snapshots already exist for the current week.
+- Admins may publish a tenant-wide snapshot from this page (explicit + confirmed).
+
+Data sources
+------------
+- Detail rows come from: fetch_current_streaks()
+  -> GAP_CURRENT_STREAKS + CUSTOMERS (address enrich)
+- Execution summary (top table in PDF) comes from snapshots (latest week) and MUST be passed
+  into build_gap_streaks_pdf(execution_df=...) to keep download + email PDFs identical.
+
+Notes for future devs
+---------------------
+- Keep ALL Streamlit UI inside render().
+- Keep DB/email/PDF logic in utils where possible; this page orchestrates.
 """
 
 from __future__ import annotations
@@ -20,7 +32,7 @@ from __future__ import annotations
 import io
 import zipfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -28,70 +40,41 @@ import streamlit as st
 from utils.gap_history_mailer import (
     fetch_current_streaks,
     send_gap_history_pdfs,
+    fetch_execution_summary_df,  # ✅ use this directly
 )
-from utils.pdf_reports import build_gap_streaks_pdf, GAP_HISTORY_PDF_COLUMNS
-import utils.gap_history_mailer as ghm
-
 from utils.gap_snapshot_pipeline import (
     fetch_snapshot_status as pipeline_fetch_snapshot_status,
     get_week_start as pipeline_get_week_start,
     publish_weekly_snapshot_all as pipeline_publish_weekly_snapshot_all,
 )
+from utils.pdf_reports import GAP_HISTORY_PDF_COLUMNS, build_gap_streaks_pdf
 
 
-
-st.write("gap_history_mailer loaded from:", ghm.__file__)
-
-
-
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Page constants
-# -----------------------------------------------------------------------------
+# =============================================================================
 PAGE_TITLE = "Gap History Emailer (PDF)"
 DEFAULT_SENDER_EMAIL = "randy@chainlinkanalytics.com"
 
-DATE_COLUMNS = [
-    "SNAPSHOT_WEEK_START",
-    "FIRST_GAP_WEEK",
-    "LAST_GAP_WEEK",
-]
+DATE_COLUMNS = ["SNAPSHOT_WEEK_START", "FIRST_GAP_WEEK", "LAST_GAP_WEEK"]
 
-PDF_COLUMNS = [
-    "CHAIN_NAME",
-    "STORE_NUMBER",
-    "STORE_NAME",
-    "ADDRESS",
-    "SUPPLIER_NAME",
-    "PRODUCT_NAME",
-    "UPC",
-    "STREAK_WEEKS",
-    "FIRST_GAP_WEEK",
-    "LAST_GAP_WEEK",
-]
-
-
-# -----------------------------------------------------------------------------
-# Session state initialization
-# -----------------------------------------------------------------------------
 SESSION_DEFAULTS = {
     "ghm_filters_hash": None,
     "ghm_results": None,
     "ghm_selected_sp": None,
 }
-for key, value in SESSION_DEFAULTS.items():
-    st.session_state.setdefault(key, value)
 
 
-# -----------------------------------------------------------------------------
-# Helper functions
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Helper functions (pure / no Streamlit UI)
+# =============================================================================
 def _filters_hash(
     chains: List[str],
     suppliers: List[str],
     salespeople: List[str],
     min_streak: int,
-) -> tuple:
-    """Stable, order-insensitive filter signature."""
+) -> Tuple[tuple, tuple, tuple, int]:
+    """Stable, order-insensitive filter signature for session_state caching."""
     return (
         tuple(sorted(chains or [])),
         tuple(sorted(suppliers or [])),
@@ -101,18 +84,18 @@ def _filters_hash(
 
 
 def _safe_label(text: str) -> str:
-    """Filesystem-safe label."""
+    """Filesystem-safe label for filenames inside ZIPs."""
     return str(text).replace("/", "-").replace("\\", "-").strip()
 
 
 def _get_tenant_id() -> Optional[int]:
     """Resolve tenant_id from session_state."""
     tid = st.session_state.get("tenant_id")
-    if tid:
+    if tid is not None:
         try:
             return int(tid)
         except Exception:
-            pass
+            return None
 
     tenant_cfg = st.session_state.get("tenant_config")
     if isinstance(tenant_cfg, dict):
@@ -135,7 +118,7 @@ def _get_tenant_name() -> str:
 
 
 def _zip_pdfs(pdf_map: Dict[str, bytes], suffix: str) -> bytes:
-    """Bundle PDFs into a ZIP."""
+    """Bundle PDFs into a ZIP and return bytes."""
     bio = io.BytesIO()
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
         for label, pdf_bytes in pdf_map.items():
@@ -143,45 +126,97 @@ def _zip_pdfs(pdf_map: Dict[str, bytes], suffix: str) -> bytes:
     return bio.getvalue()
 
 
+def _normalize_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce known date columns to date() for consistent display."""
+    out = df.copy()
+    for col in DATE_COLUMNS:
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce").dt.date
+    return out
+
+
+def _ensure_int_streak(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure STREAK_WEEKS is int-safe for filtering/sorting."""
+    out = df.copy()
+    if "STREAK_WEEKS" in out.columns:
+        out["STREAK_WEEKS"] = pd.to_numeric(out["STREAK_WEEKS"], errors="coerce").fillna(1).astype(int)
+    return out
+
+
+def _compute_max_streak(df: pd.DataFrame) -> int:
+    """Compute max streak weeks for slider bounds."""
+    if "STREAK_WEEKS" not in df.columns or df.empty:
+        return 1
+    return int(pd.to_numeric(df["STREAK_WEEKS"], errors="coerce").fillna(1).max())
+
+
+def _is_admin_user_safe(tenant_id: int) -> bool:
+    """Best-effort admin check; returns False on any failure."""
+    try:
+        from utils.auth_utils import is_admin_user  # noqa: WPS433
+
+        user_email = st.session_state.get("user_email") or st.session_state.get("username") or ""
+        if not user_email:
+            return False
+        return bool(is_admin_user(user_email, str(tenant_id)))
+    except Exception:
+        return False
+
+
+# =============================================================================
+# PDF build helper
+# =============================================================================
 def _build_pdf(
     streaks_df: pd.DataFrame,
     tenant_name: str,
     salesperson: str,
+    *,
+    as_of_date: Optional[datetime] = None,
+    execution_df: Optional[pd.DataFrame] = None,
 ) -> bytes:
-    """Build a single salesperson PDF (header includes salesperson)."""
-    df = streaks_df[streaks_df["SALESPERSON_NAME"] == salesperson].copy()
-    df = df[[c for c in PDF_COLUMNS if c in df.columns]]
+    """
+    Build a single salesperson PDF.
+
+    Key rule:
+    - Slice using canonical GAP_HISTORY_PDF_COLUMNS contract.
+    - Pass execution_df so downloaded PDF matches emailed PDF.
+    """
+    df_sp = streaks_df[streaks_df["SALESPERSON_NAME"] == salesperson].copy()
+
+    cols = [c for c in GAP_HISTORY_PDF_COLUMNS if c in df_sp.columns]
+    df_sp = df_sp[cols]
 
     return build_gap_streaks_pdf(
-        df,
+        df_sp,
         tenant_name=tenant_name,
-        salesperson_name=salesperson,  
+        salesperson_name=salesperson,
+        as_of_date=as_of_date or datetime.now(),
+        execution_df=execution_df,
     )
 
 
-
-# -----------------------------------------------------------------------------
-# Page render
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Streamlit UI
+# =============================================================================
 def render() -> None:
     """
     Gap History Mailer Page
 
-    Overview:
-    - Shows Weekly Snapshot status (cards) and allows admin publish (tenant-wide).
-    - Loads enriched streak rows via fetch_current_streaks() (includes ADDRESS).
-    - User selects filters (chains/suppliers/salespeople/min_streak).
-    - Generates preview + PDF downloads (single + all).
-    - Sends emails (single salesperson or all) via send_gap_history_pdfs().
-
-    Dev notes:
-    - Keep ALL Streamlit UI inside this function.
-    - Utilities (emailer/pdf/query) must remain outside Streamlit UI modules.
+    UX flow
+    -------
+    1) Snapshot status cards (and admin publish if missing)
+    2) Load current streak data (address-enriched)
+    3) Filters form -> compute results once per submit/change
+    4) Preview + downloads (single PDF + all ZIP)
+    5) Send emails (single or all)
     """
+    for k, v in SESSION_DEFAULTS.items():
+        st.session_state.setdefault(k, v)
+
     st.title(PAGE_TITLE)
 
     # -------------------------------------------------------------------------
-    # Validate session / tenant context
+    # Validate tenant context
     # -------------------------------------------------------------------------
     conn = st.session_state.get("conn")
     if not conn:
@@ -196,7 +231,7 @@ def render() -> None:
     tenant_name = _get_tenant_name()
 
     # -------------------------------------------------------------------------
-    # Snapshot status + publish (melted from gap_history page)
+    # Snapshot status + admin publish
     # -------------------------------------------------------------------------
     st.markdown("### Weekly Snapshot Status")
 
@@ -236,6 +271,7 @@ def render() -> None:
     latest_triggered_by = None
 
     if runs_df is not None and not runs_df.empty:
+        runs_df = runs_df.copy()
         runs_df["SNAPSHOT_WEEK_START"] = pd.to_datetime(runs_df["SNAPSHOT_WEEK_START"]).dt.date
         latest = runs_df.iloc[0]
         latest_week = latest.get("SNAPSHOT_WEEK_START")
@@ -243,7 +279,7 @@ def render() -> None:
         latest_run_at = latest.get("RUN_AT")
         latest_triggered_by = latest.get("TRIGGERED_BY")
 
-    published_this_week = (latest_week == this_week)
+    published_this_week = bool(latest_week == this_week)
 
     st.markdown(
         f"""
@@ -272,15 +308,7 @@ def render() -> None:
     if latest_run_at or latest_triggered_by:
         st.caption(f"Latest run at: {latest_run_at} | Triggered by: {latest_triggered_by}")
 
-    # Admin publish gate (reuse your existing is_admin_user if available)
-    is_admin = False
-    try:
-        from utils.auth_utils import is_admin_user  # noqa: WPS433
-        user_email = st.session_state.get("user_email") or st.session_state.get("username") or ""
-        if user_email:
-            is_admin = bool(is_admin_user(user_email, str(tenant_id)))
-    except Exception:
-        is_admin = False
+    is_admin = _is_admin_user_safe(tenant_id)
 
     if not published_this_week:
         if is_admin:
@@ -314,23 +342,10 @@ def render() -> None:
             st.info("Snapshot is missing for this week. An admin can publish it from this page.")
 
     st.markdown("---")
+    st.caption("Sends the **Gap History (streaks)** PDF to each salesperson and CCs their manager.")
 
     # -------------------------------------------------------------------------
-    # Page guidance
-    # -------------------------------------------------------------------------
-    st.caption(
-        "Sends the **Gap History (streaks)** PDF to each salesperson "
-        "and CCs their manager."
-    )
-
-    # -------------------------------------------------------------------------
-    # Ensure session defaults exist
-    # -------------------------------------------------------------------------
-    for k, v in SESSION_DEFAULTS.items():
-        st.session_state.setdefault(k, v)
-
-    # -------------------------------------------------------------------------
-    # Load baseline data (unfiltered) once per page load
+    # Load baseline data (unfiltered)
     # -------------------------------------------------------------------------
     with st.spinner("Loading streak history…"):
         base_df = fetch_current_streaks(
@@ -342,35 +357,22 @@ def render() -> None:
             min_streak=1,
         )
 
-    if base_df.empty:
+    if base_df is None or base_df.empty:
         st.info("No streak history found.")
         return
 
-    # Normalize date columns for display
-    for col in DATE_COLUMNS:
-        if col in base_df.columns:
-            base_df[col] = pd.to_datetime(base_df[col], errors="coerce").dt.date
+    base_df = _normalize_date_columns(base_df)
+    base_df = _ensure_int_streak(base_df)
 
-    # Dimensions for filter widgets
-    chains_dim = (
-        sorted(base_df["CHAIN_NAME"].dropna().unique().tolist())
-        if "CHAIN_NAME" in base_df.columns
-        else []
-    )
+    chains_dim = sorted(base_df["CHAIN_NAME"].dropna().unique().tolist()) if "CHAIN_NAME" in base_df.columns else []
     suppliers_dim = (
-        sorted(base_df["SUPPLIER_NAME"].dropna().unique().tolist())
-        if "SUPPLIER_NAME" in base_df.columns
-        else []
+        sorted(base_df["SUPPLIER_NAME"].dropna().unique().tolist()) if "SUPPLIER_NAME" in base_df.columns else []
     )
     salespeople_dim = (
-        sorted(base_df["SALESPERSON_NAME"].dropna().unique().tolist())
-        if "SALESPERSON_NAME" in base_df.columns
-        else []
+        sorted(base_df["SALESPERSON_NAME"].dropna().unique().tolist()) if "SALESPERSON_NAME" in base_df.columns else []
     )
 
-    max_streak = 1
-    if "STREAK_WEEKS" in base_df.columns:
-        max_streak = int(pd.to_numeric(base_df["STREAK_WEEKS"], errors="coerce").fillna(1).max())
+    max_streak = _compute_max_streak(base_df)
 
     # -------------------------------------------------------------------------
     # Filters (form)
@@ -395,16 +397,15 @@ def render() -> None:
         submitted = st.form_submit_button("Generate PDFs / Email List")
 
     # -------------------------------------------------------------------------
-    # Filter execution (only when submitted AND filters changed)
+    # Filter execution (only on submit AND change)
     # -------------------------------------------------------------------------
     if submitted:
-        new_hash = _filters_hash(chains, suppliers, salespeople, min_streak)
+        new_hash = _filters_hash(chains, suppliers, salespeople, int(min_streak))
         if new_hash != st.session_state["ghm_filters_hash"]:
             st.session_state["ghm_filters_hash"] = new_hash
 
             df = base_df.copy()
 
-            # Apply filters
             if chains and "CHAIN_NAME" in df.columns:
                 df = df[df["CHAIN_NAME"].isin(chains)]
             if suppliers and "SUPPLIER_NAME" in df.columns:
@@ -412,13 +413,7 @@ def render() -> None:
             if salespeople and "SALESPERSON_NAME" in df.columns:
                 df = df[df["SALESPERSON_NAME"].isin(salespeople)]
 
-            # Min streak
             if "STREAK_WEEKS" in df.columns:
-                df["STREAK_WEEKS"] = (
-                    pd.to_numeric(df["STREAK_WEEKS"], errors="coerce")
-                    .fillna(1)
-                    .astype(int)
-                )
                 df = df[df["STREAK_WEEKS"] >= int(min_streak)]
 
             if df.empty:
@@ -456,11 +451,7 @@ def render() -> None:
     if default_sp not in sp_list:
         default_sp = sp_list[0]
 
-    selected_sp = st.selectbox(
-        "Preview salesperson",
-        sp_list,
-        index=sp_list.index(default_sp),
-    )
+    selected_sp = st.selectbox("Preview salesperson", sp_list, index=sp_list.index(default_sp))
     st.session_state["ghm_selected_sp"] = selected_sp
 
     sp_df = df[df["SALESPERSON_NAME"] == selected_sp].sort_values(
@@ -471,8 +462,15 @@ def render() -> None:
     st.dataframe(sp_df, width="stretch", hide_index=True)
     st.write(f"{selected_sp}: {len(sp_df)} active gaps")
 
-    # Single PDF
-    pdf_bytes = _build_pdf(df, tenant_name, selected_sp)
+    # ✅ Execution summary MUST be computed here (runtime), not at import time
+    execution_df = fetch_execution_summary_df(
+        con=conn,
+        tenant_id=int(tenant_id),
+        salesperson_name=str(selected_sp),
+    )
+
+    # Single PDF (download should match email PDF)
+    pdf_bytes = _build_pdf(df, tenant_name, selected_sp, execution_df=execution_df)
 
     c1, c2 = st.columns(2)
     c1.download_button(
@@ -483,8 +481,16 @@ def render() -> None:
         width="stretch",
     )
 
-    # All PDFs zip (can be heavy; keep as-is for now)
-    all_pdfs = {sp: _build_pdf(df, tenant_name, sp) for sp in sp_list}
+    # All PDFs ZIP (per-person exec summary so ZIP matches email too)
+    all_pdfs: Dict[str, bytes] = {}
+    for sp in sp_list:
+        exec_df_sp = fetch_execution_summary_df(
+            con=conn,
+            tenant_id=int(tenant_id),
+            salesperson_name=str(sp),
+        )
+        all_pdfs[sp] = _build_pdf(df, tenant_name, sp, execution_df=exec_df_sp)
+
     c2.download_button(
         "📦 Download ALL PDFs",
         _zip_pdfs(all_pdfs, "gap_history"),
@@ -499,11 +505,12 @@ def render() -> None:
     st.markdown("---")
     st.subheader("Send Emails")
 
-    sender_email = (
-        st.secrets.get("mail", {}).get("sender_email", DEFAULT_SENDER_EMAIL)
-        if hasattr(st, "secrets")
-        else DEFAULT_SENDER_EMAIL
-    )
+    sender_email = DEFAULT_SENDER_EMAIL
+    try:
+        if hasattr(st, "secrets"):
+            sender_email = st.secrets.get("mail", {}).get("sender_email", DEFAULT_SENDER_EMAIL)
+    except Exception:
+        sender_email = DEFAULT_SENDER_EMAIL
 
     s1, s2, s3 = st.columns([1, 1, 0.7])
 
@@ -519,8 +526,7 @@ def render() -> None:
             min_streak=res["min_streak"],
             only_salespeople=[selected_sp],
         )
-
-        st.success(f"Sent: {result['salesperson_success']} | Failed: {result['salesperson_fail']}")
+        st.success(f"Sent: {result.get('salesperson_success', 0)} | Failed: {result.get('salesperson_fail', 0)}")
         if result.get("errors"):
             st.subheader("Errors")
             st.json(result["errors"])
@@ -540,8 +546,7 @@ def render() -> None:
             min_streak=res["min_streak"],
             only_salespeople=sp_list,
         )
-
-        st.success(f"Sent: {result['salesperson_success']} | Failed: {result['salesperson_fail']}")
+        st.success(f"Sent: {result.get('salesperson_success', 0)} | Failed: {result.get('salesperson_fail', 0)}")
         if result.get("errors"):
             st.subheader("Errors")
             st.json(result["errors"])
@@ -555,45 +560,31 @@ def render() -> None:
         st.rerun()
 
 
+# =============================================================================
+# Email body helper (optional)
+# =============================================================================
+def build_gap_history_email_body(salesperson: str, stats: dict) -> str:
+    """
+    Simple HTML body for an email.
 
-
-
-def build_gap_history_email_body(
-    salesperson: str,
-    stats: dict,
-) -> str:
+    NOTE: Your current send_gap_history_pdfs() already builds its own body.
+    Keep this only if you plan to centralize templates later.
+    """
     return f"""
     <p><strong>Gap History – Weekly Execution Focus</strong></p>
     <p>Hello {salesperson},</p>
-
-    <p>
-    Attached is your <strong>Gap History Report</strong>, showing current
-    gaps and how long they have persisted.
-    </p>
-
+    <p>Attached is your <strong>Gap History Report</strong>, showing current gaps and how long they have persisted.</p>
     <ul>
-      <li><strong>Active Gaps:</strong> {stats["active"]}</li>
-      <li><strong>New This Week:</strong> {stats["new"]}</li>
-      <li><strong>2–3 Week Gaps:</strong> {stats["mid"]}</li>
-      <li><strong>4+ Week Gaps:</strong> {stats["long"]}</li>
+      <li><strong>Active Gaps:</strong> {stats.get("active", 0)}</li>
+      <li><strong>New This Week:</strong> {stats.get("new", 0)}</li>
+      <li><strong>2–3 Week Gaps:</strong> {stats.get("mid", 0)}</li>
+      <li><strong>4+ Week Gaps:</strong> {stats.get("long", 0)}</li>
     </ul>
-
-    <p>
-    Please prioritize older gaps first and reach out to your manager if
-    support is needed.
-    </p>
-
-    <p>
-    Best regards,<br>
-    <strong>Chainlink Analytics</strong>
-    </p>
-
+    <p>Please prioritize older gaps first and reach out to your manager if support is needed.</p>
+    <p>Best regards,<br><strong>Chainlink Analytics</strong></p>
     <hr>
-    <p style="font-size:12px;color:#666;">
-    Generated {datetime.now().strftime("%Y-%m-%d %H:%M")}
-    </p>
+    <p style="font-size:12px;color:#666;">Generated {datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
     """
-
 
 
 if __name__ == "__main__":

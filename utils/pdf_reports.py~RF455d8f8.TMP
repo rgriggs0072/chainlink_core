@@ -608,7 +608,6 @@ def build_gap_streaks_pdf(
         "ADDRESS",
         "SUPPLIER_NAME",
         "PRODUCT_NAME",
-        "GAP_FLAG",
         "STREAK_WEEKS",
     ]
     cols = [c for c in cols if c in df_display.columns]
@@ -619,7 +618,6 @@ def build_gap_streaks_pdf(
         "ADDRESS": "Address",
         "SUPPLIER_NAME": "Supplier",
         "PRODUCT_NAME": "Product",
-        "GAP_FLAG": "Flag",
         "STREAK_WEEKS": "Wks",
     }
 

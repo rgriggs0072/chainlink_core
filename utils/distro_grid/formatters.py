@@ -18,13 +18,34 @@ Important:
 
 from typing import Literal
 from io import BytesIO
+import os
 
 import pandas as pd
+import streamlit as st
+
 
 from .schema import UPLOAD_COLUMNS
 
 
 UploadLayout = Literal["standard", "pivot"]
+
+
+def _normalize_header(c) -> str:
+    """
+    Normalize Excel column headers so validation survives:
+    - non-breaking spaces
+    - wrapped headers (newlines)
+    - repeated whitespace
+    - leading/trailing whitespace
+    - standardizes to UPPER_CASE_WITH_UNDERSCORES
+    """
+    s = str(c) if c is not None else ""
+    s = s.replace("\u00A0", " ")          # non-breaking space from Excel exports
+    s = s.replace("\n", " ").replace("\r", " ")
+    s = " ".join(s.split())              # collapse repeated whitespace
+    s = s.strip().upper().replace(" ", "_")
+    return s
+
 
 
 # ---------------------------------------------------------------------
@@ -163,7 +184,8 @@ def format_uploaded_grid(
     df = df_raw.copy()
 
     # Normalize headers: UPPER_CASE_WITH_UNDERSCORES
-    df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
+    df.columns = [_normalize_header(c) for c in df.columns]
+
 
     if layout == "standard":
         df = _format_standard(df)
@@ -291,9 +313,27 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
     - ACTIVATION_STATUS (blank)
     """
     df = df.copy()
+    st.write("DEBUG formatters.py path:", os.path.abspath(__file__))
+    st.write("DEBUG _format_pivot() running")
 
     # Required ID columns in the pivot layout (normalized to uppercase/underscores)
-    id_cols = ["UPC", "SKU_#", "NAME", "MANUFACTURER", "SEGMENT"]
+    # RIGHT BEFORE validation
+    st.write("DEBUG raw columns:", [repr(c) for c in df.columns.tolist()])
+
+        # ------------------------------------------------------------------
+    # Pivot header compatibility
+    # ------------------------------------------------------------------
+    # Some clients/templates use NAME instead of PRODUCT_NAME.
+    # Normalize here so the rest of the pipeline is stable.
+    if "NAME" in df.columns and "PRODUCT_NAME" not in df.columns:
+        df.rename(columns={"NAME": "PRODUCT_NAME"}, inplace=True)
+
+    # Some pivot exports might use SKU instead of SKU_#
+    if "SKU" in df.columns and "SKU_#" not in df.columns:
+        df.rename(columns={"SKU": "SKU_#"}, inplace=True)
+
+
+    id_cols = ["UPC", "SKU_#", "PRODUCT_NAME", "MANUFACTURER", "SEGMENT"]
     for col in id_cols:
         if col not in df.columns:
             raise ValueError(f"Pivot upload is missing required column '{col}'")
@@ -358,7 +398,7 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Product + manufacturer + segment
-    out["PRODUCT_NAME"] = melted["NAME"].astype(str).str.strip()
+    out["PRODUCT_NAME"] = melted["PRODUCT_NAME"].astype(str).str.strip()
     out["MANUFACTURER"] = melted["MANUFACTURER"].astype(str).str.strip()
     out["SEGMENT"] = melted["SEGMENT"].astype(str).str.strip()
 

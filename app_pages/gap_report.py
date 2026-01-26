@@ -32,7 +32,7 @@ import streamlit as st
 
 from utils.reports_utils import create_gap_report
 from utils.snowflake_utils import fetch_distinct_values
-from utils.gap_history_helpers import save_gap_snapshot, normalize_upc
+from utils.gap_history_helpers import normalize_upc
 
 
 # -----------------------------
@@ -49,69 +49,69 @@ def _get_tenant_id(tenant_config) -> int | None:
     return getattr(tenant_config, "tenant_id", None)
 
 
-def _build_snapshot_df(df_gaps: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a snapshot dataframe aligned to GAP_REPORT_SNAPSHOT expectations.
+# def _build_snapshot_df(df_gaps: pd.DataFrame) -> pd.DataFrame:
+#     """
+#     Build a snapshot dataframe aligned to GAP_REPORT_SNAPSHOT expectations.
 
-    Notes:
-    - We intentionally normalize dg_upc and sr_upc using normalize_upc()
-      to permanently prevent ".0" artifacts.
-    - IS_GAP is computed once:
-        IS_GAP = (UPC exists) AND (SR_UPC missing)
-      This is the safest definition for your gap history logic.
-    """
-    snapshot_df = pd.DataFrame()
+#     Notes:
+#     - We intentionally normalize dg_upc and sr_upc using normalize_upc()
+#       to permanently prevent ".0" artifacts.
+#     - IS_GAP is computed once:
+#         IS_GAP = (UPC exists) AND (SR_UPC missing)
+#       This is the safest definition for your gap history logic.
+#     """
+#     snapshot_df = pd.DataFrame()
 
-    # Store / chain
-    snapshot_df["CHAIN_NAME"] = df_gaps.get("CHAIN_NAME")
-    snapshot_df["STORE_NUMBER"] = df_gaps.get("STORE_NUMBER")
-    snapshot_df["STORE_NAME"] = df_gaps.get("STORE_NAME")
+#     # Store / chain
+#     snapshot_df["CHAIN_NAME"] = df_gaps.get("CHAIN_NAME")
+#     snapshot_df["STORE_NUMBER"] = df_gaps.get("STORE_NUMBER")
+#     snapshot_df["STORE_NAME"] = df_gaps.get("STORE_NAME")
 
-    # Product / supplier
-    snapshot_df["SUPPLIER_NAME"] = df_gaps.get("SUPPLIER")
-    snapshot_df["PRODUCT_NAME"] = df_gaps.get("PRODUCT_NAME")
+#     # Product / supplier
+#     snapshot_df["SUPPLIER_NAME"] = df_gaps.get("SUPPLIER")
+#     snapshot_df["PRODUCT_NAME"] = df_gaps.get("PRODUCT_NAME")
 
-    # Salesperson
-    snapshot_df["SALESPERSON_NAME"] = df_gaps.get("SALESPERSON")
+#     # Salesperson
+#     snapshot_df["SALESPERSON_NAME"] = df_gaps.get("SALESPERSON")
 
-    # -----------------------------
-    # UPCs: schematic vs sales
-    # -----------------------------
-    # dg_upc = in-schematic item key
-    if "dg_upc" in df_gaps.columns:
-        snapshot_df["UPC"] = df_gaps["dg_upc"].apply(normalize_upc)
-    else:
-        snapshot_df["UPC"] = None
+#     # -----------------------------
+#     # UPCs: schematic vs sales
+#     # -----------------------------
+#     # dg_upc = in-schematic item key
+#     if "dg_upc" in df_gaps.columns:
+#         snapshot_df["UPC"] = df_gaps["dg_upc"].apply(normalize_upc)
+#     else:
+#         snapshot_df["UPC"] = None
 
-    # sr_upc = sold item key (may be blank for gaps)
-    if "sr_upc" in df_gaps.columns:
-        snapshot_df["SR_UPC"] = df_gaps["sr_upc"].apply(normalize_upc)
-    else:
-        snapshot_df["SR_UPC"] = None
+#     # sr_upc = sold item key (may be blank for gaps)
+#     if "sr_upc" in df_gaps.columns:
+#         snapshot_df["SR_UPC"] = df_gaps["sr_upc"].apply(normalize_upc)
+#     else:
+#         snapshot_df["SR_UPC"] = None
 
-    # -----------------------------
-    # IN_SCHEMATIC flag
-    # -----------------------------
-    if "In_Schematic" in df_gaps.columns:
-        snapshot_df["IN_SCHEMATIC"] = df_gaps["In_Schematic"]
-    else:
-        snapshot_df["IN_SCHEMATIC"] = True  # safe fallback
+#     # -----------------------------
+#     # IN_SCHEMATIC flag
+#     # -----------------------------
+#     if "In_Schematic" in df_gaps.columns:
+#         snapshot_df["IN_SCHEMATIC"] = df_gaps["In_Schematic"]
+#     else:
+#         snapshot_df["IN_SCHEMATIC"] = True  # safe fallback
 
-    # -----------------------------
-    # GAP definition (single source of truth)
-    # -----------------------------
-    # Gap if: in schematic UPC exists AND SR_UPC is missing
-    snapshot_df["IS_GAP"] = snapshot_df["UPC"].notna() & snapshot_df["SR_UPC"].isna()
+#     # -----------------------------
+#     # GAP definition (single source of truth)
+#     # -----------------------------
+#     # Gap if: in schematic UPC exists AND SR_UPC is missing
+#     snapshot_df["IS_GAP"] = snapshot_df["UPC"].notna() & snapshot_df["SR_UPC"].isna()
 
-    # -----------------------------
-    # Optional fields (placeholders)
-    # -----------------------------
-    snapshot_df["GAP_CASES"] = None
-    snapshot_df["LAST_PURCHASE_DATE"] = None
-    snapshot_df["CATEGORY"] = None
-    snapshot_df["SUBCATEGORY"] = None
+#     # -----------------------------
+#     # Optional fields (placeholders)
+#     # -----------------------------
+#     snapshot_df["GAP_CASES"] = None
+#     snapshot_df["LAST_PURCHASE_DATE"] = None
+#     snapshot_df["CATEGORY"] = None
+#     snapshot_df["SUBCATEGORY"] = None
 
-    return snapshot_df
+#     return snapshot_df
 
 
 # -----------------------------
@@ -165,56 +165,13 @@ def render():
     # Generate report
     # ------------------------------------------------------------------
     with st.spinner("Generating report..."):
-        try:
-            temp_file_path = create_gap_report(conn, salesperson, store, supplier)
-        except Exception as e:
-            st.error(f"❌ Report generation failed: {e}")
-            return
+        temp_file_path = create_gap_report(conn, salesperson, store, supplier)
 
         if not temp_file_path or not os.path.exists(temp_file_path):
             st.error("❌ Report generation failed (no file produced).")
             return
 
-        # ------------------------------------------------------------------
-        # Snapshot write (first run per week per tenant)
-        # ------------------------------------------------------------------
-        if tenant_id is not None:
-            try:
-                df_gaps = pd.read_excel(temp_file_path, engine="openpyxl")
-
-                if df_gaps.empty:
-                    st.caption("Snapshot skipped: report produced 0 rows.")
-                else:
-                    snapshot_df = _build_snapshot_df(df_gaps)
-
-                    triggered_by = (
-                        st.session_state.get("user_email")
-                        or st.session_state.get("username")
-                        or "gap_report_page"
-                    )
-
-                    snapshot_saved = save_gap_snapshot(
-                        conn=conn,
-                        tenant_id=tenant_id,
-                        df_gaps=snapshot_df,
-                        snapshot_week_start=None,
-                        triggered_by=triggered_by,
-                    )
-
-                    if snapshot_saved:
-                        st.info("📌 Gap history snapshot saved for this week (first run only).")
-                    else:
-                        st.caption("Snapshot not saved (already exists for this week or nothing to write).")
-
-            except Exception as e:
-                # Don't break download just because snapshot failed
-                st.warning(f"Gap history snapshot failed: {e}")
-        else:
-            st.caption("Snapshot skipped: tenant_id not detected.")
-
-        # ------------------------------------------------------------------
         # Download
-        # ------------------------------------------------------------------
         with open(temp_file_path, "rb") as f:
             bytes_data = f.read()
 
@@ -226,8 +183,8 @@ def render():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        # Clean up temp file
         try:
             os.remove(temp_file_path)
         except Exception as e:
             st.warning(f"Failed to delete temporary file: {e}")
+

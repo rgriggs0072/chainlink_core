@@ -1,4 +1,5 @@
-# ---------------- utils/sales_contacts.py ----------------
+﻿# ---------------- utils/sales_contacts.py ----------------
+# -*- coding: utf-8 -*-
 """
 Sales Contacts helpers (Streamlit-aware, UI-free)
 
@@ -8,6 +9,7 @@ Centralized helpers around the SALES_CONTACTS table.
 Used by:
   - Email Gap Report (resolve salesperson + manager emails)
   - Admin UI pages (display + lookup)
+  - Salesperson reassignment (update operational tables)
 
 Design rules
 ------------
@@ -16,8 +18,8 @@ Design rules
   an explicit tenant_id so they can be used outside Streamlit.
 - Prefer cursor.execute + fetch to avoid Snowflake/pandas edge cases.
 
-Assumed table structure (per-tenant DB)
----------------------------------------
+SALES_CONTACTS structure (per-tenant DB)
+----------------------------------------
 SALES_CONTACTS (
     TENANT_ID         NUMBER(10,0)   NOT NULL,
     SALESPERSON_ID    NUMBER(10,0),
@@ -37,15 +39,27 @@ Key matching
 ------------
 - Admin UX upserts by (TENANT_ID + UPPER(SALESPERSON_NAME)).
 - This module supports:
-    * upsert_by_name (recommended / matches admin)
-    * upsert_by_id   (legacy / optional)
+    * upsert_contact_by_name (recommended / matches admin)
+    * upsert_contact_by_id   (legacy / optional)
 
+Salesperson reassignment behavior (IMPORTANT)
+---------------------------------------------
+Reassignment should update OPERATIONAL tables (CUSTOMERS, GAP tables, etc.)
+and should NOT rename the old SALES_CONTACTS row by default.
+
+Correct behavior:
+- Update operational tables: OLD -> NEW
+- Ensure NEW contact exists/active (admin page can update details)
+- Deactivate OLD contact (kept for history, won't receive emails)
+
+So:
+- apply_salesperson_reassignment(update_sales_contacts=False) is the default.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -143,6 +157,33 @@ def _req_str(val: str, field: str) -> str:
     return s
 
 
+def _normalize_salesperson_label(name: str) -> str:
+    """
+    Normalize salesperson labels to match your pipeline.
+
+    Your system tends to store salesperson labels as uppercase strings.
+    """
+    return (name or "").strip().upper()
+
+
+def _qualify_ident(ident: str) -> str:
+    """
+    Minimal identifier guardrail.
+
+    We do not accept arbitrary SQL here. Table/column names in this module
+    are owned by your code, not user input.
+    """
+    s = (ident or "").strip()
+    if not s:
+        raise InvalidInputError("Identifier is required.")
+    # Allow letters, numbers, underscore, dot (schema.table), and quotes if you use them.
+    # If you need more, expand intentionally.
+    bad = any(ch in s for ch in [";", "--", "/*", "*/"])
+    if bad:
+        raise InvalidInputError(f"Unsafe identifier: {ident}")
+    return s
+
+
 # =============================================================================
 # Column discovery (defensive for optional columns)
 # =============================================================================
@@ -151,25 +192,25 @@ def table_columns(conn) -> List[str]:
     """
     Return column names for SALES_CONTACTS in the current schema.
 
-    This lets us be defensive when MANAGER_EMAIL_2 / EXTRA_CC_EMAIL are not present.
+    Defensive for optional columns (MANAGER_EMAIL_2 / EXTRA_CC_EMAIL).
     """
     with conn.cursor() as cur:
         cur.execute("DESC TABLE SALES_CONTACTS")
         df = _fetch_df(cur)
+
     if df.empty:
         return []
-    # Snowflake DESC TABLE returns column name in "name" (lower) or "NAME" depending on driver
+
     for col_name in ["name", "NAME"]:
         if col_name in df.columns:
-            return [str(x).upper() for x in df[col_name].tolist()]
+            return [str(x).strip().upper() for x in df[col_name].tolist()]
+
     # fallback: first column
-    return [str(x).upper() for x in df.iloc[:, 0].tolist()]
+    return [str(x).strip().upper() for x in df.iloc[:, 0].tolist()]
 
 
 def _select_cols_for_fetch(conn) -> List[str]:
-    """
-    Build a safe SELECT column list based on the table's current schema.
-    """
+    """Build a safe SELECT column list based on the table's current schema."""
     cols = set(table_columns(conn))
 
     base = [
@@ -185,11 +226,12 @@ def _select_cols_for_fetch(conn) -> List[str]:
         "UPDATED_AT",
     ]
 
-    # Optional columns
     if "MANAGER_EMAIL_2" in cols:
         base.insert(base.index("MANAGER_EMAIL") + 1, "MANAGER_EMAIL_2")
+
     if "EXTRA_CC_EMAIL" in cols:
-        base.insert(base.index("MANAGER_EMAIL") + (2 if "MANAGER_EMAIL_2" in cols else 1), "EXTRA_CC_EMAIL")
+        insert_pos = base.index("MANAGER_EMAIL") + (2 if "MANAGER_EMAIL_2" in cols else 1)
+        base.insert(insert_pos, "EXTRA_CC_EMAIL")
 
     return base
 
@@ -206,11 +248,6 @@ def fetch_sales_contacts(
 ) -> pd.DataFrame:
     """
     Fetch SALES_CONTACTS rows for a tenant.
-
-    Args:
-        conn: tenant Snowflake connection
-        tenant_id: optional; resolved from session if not provided
-        active_only: if True, only rows where IS_ACTIVE = TRUE
 
     Returns:
         DataFrame ordered by UPPER(SALESPERSON_NAME)
@@ -243,22 +280,18 @@ def lookup_contact_by_salesperson_name(
     *,
     active_only: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Lookup a single contact by salesperson name (case-insensitive).
-
-    Returns:
-        dict(row) or None
-    """
+    """Lookup one contact by salesperson name (case-insensitive)."""
     tid = _resolve_tenant_id(tenant_id)
     name = (salesperson_name or "").strip()
     if not name:
         return None
 
     select_cols = _select_cols_for_fetch(conn)
+    cols_no_audit = [c for c in select_cols if c not in {"CREATED_AT", "UPDATED_AT"}]
 
     sql = f"""
         SELECT
-            {", ".join([c for c in select_cols if c not in {"CREATED_AT", "UPDATED_AT"}])}
+            {", ".join(cols_no_audit)}
         FROM SALES_CONTACTS
         WHERE TENANT_ID = %s
           AND UPPER(SALESPERSON_NAME) = UPPER(%s)
@@ -268,7 +301,6 @@ def lookup_contact_by_salesperson_name(
     if active_only:
         sql += " AND IS_ACTIVE = TRUE"
 
-    # Pick the most recently updated record if duplicates exist
     sql += """
         QUALIFY ROW_NUMBER() OVER (
             ORDER BY UPDATED_AT DESC NULLS LAST, CREATED_AT DESC NULLS LAST
@@ -287,24 +319,18 @@ def lookup_contact_by_salesperson_email(
     *,
     active_only: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Lookup a single contact by salesperson email (case-insensitive).
-
-    Useful for de-dupe checks / admin tooling.
-
-    Returns:
-        dict(row) or None
-    """
+    """Lookup one contact by salesperson email (case-insensitive)."""
     tid = _resolve_tenant_id(tenant_id)
     email = (salesperson_email or "").strip()
     if not email:
         return None
 
     select_cols = _select_cols_for_fetch(conn)
+    cols_no_audit = [c for c in select_cols if c not in {"CREATED_AT", "UPDATED_AT"}]
 
     sql = f"""
         SELECT
-            {", ".join([c for c in select_cols if c not in {"CREATED_AT", "UPDATED_AT"}])}
+            {", ".join(cols_no_audit)}
         FROM SALES_CONTACTS
         WHERE TENANT_ID = %s
           AND UPPER(SALESPERSON_EMAIL) = UPPER(%s)
@@ -343,8 +369,6 @@ def upsert_contact_by_name(
 ) -> None:
     """
     Upsert a contact keyed by (TENANT_ID, UPPER(SALESPERSON_NAME)).
-
-    This matches the admin page behavior and avoids reliance on SALESPERSON_ID.
     """
     tid = int(tenant_id)
     name = _req_str(salesperson_name, "salesperson_name")
@@ -354,7 +378,6 @@ def upsert_contact_by_name(
     has_mgr2 = "MANAGER_EMAIL_2" in cols
     has_extra = "EXTRA_CC_EMAIL" in cols
 
-    # Build SQL dynamically so we don't reference columns that don't exist.
     insert_cols = [
         "TENANT_ID",
         "SALESPERSON_NAME",
@@ -401,14 +424,13 @@ def upsert_contact_by_name(
         params.append(manager_email_2 or None)
         insert_cols.append("MANAGER_EMAIL_2")
         insert_vals.append("src.MANAGER_EMAIL_2")
-        update_sets.insert(3, "tgt.MANAGER_EMAIL_2  = src.MANAGER_EMAIL_2")  # before IS_ACTIVE
+        update_sets.insert(3, "tgt.MANAGER_EMAIL_2  = src.MANAGER_EMAIL_2")
 
     if has_extra:
         src_select_parts.append("%s AS EXTRA_CC_EMAIL")
         params.append(extra_cc_email or None)
         insert_cols.append("EXTRA_CC_EMAIL")
         insert_vals.append("src.EXTRA_CC_EMAIL")
-        # place before IS_ACTIVE update if mgr2 exists, otherwise still fine
         insert_at = 4 if has_mgr2 else 3
         update_sets.insert(insert_at, "tgt.EXTRA_CC_EMAIL   = src.EXTRA_CC_EMAIL")
 
@@ -434,9 +456,7 @@ def upsert_contact_by_name(
 
 
 def deactivate_contact_by_name(conn, *, tenant_id: int, salesperson_name: str) -> None:
-    """
-    Soft-deactivate a contact by (TENANT_ID, UPPER(SALESPERSON_NAME)).
-    """
+    """Soft-deactivate a contact by (TENANT_ID, UPPER(SALESPERSON_NAME))."""
     tid = int(tenant_id)
     name = _req_str(salesperson_name, "salesperson_name")
 
@@ -473,8 +493,6 @@ def upsert_contact_by_id(
 ) -> None:
     """
     Legacy upsert keyed by (TENANT_ID, SALESPERSON_ID).
-
-    Keep this only if you later decide to rely on numeric IDs.
     """
     tid = int(tenant_id)
     sid = int(salesperson_id)
@@ -485,7 +503,6 @@ def upsert_contact_by_id(
     has_mgr2 = "MANAGER_EMAIL_2" in cols
     has_extra = "EXTRA_CC_EMAIL" in cols
 
-    # Dynamic insert/update to avoid referencing missing optional columns.
     update_sets = [
         "SALESPERSON_NAME  = %s",
         "SALESPERSON_EMAIL = %s",
@@ -531,16 +548,16 @@ def upsert_contact_by_id(
     if has_mgr2:
         update_sets.append("MANAGER_EMAIL_2   = %s")
         update_params.append(manager_email_2 or None)
-        # insert before IS_ACTIVE or anywhere, just keep order aligned
+        # NOTE: if you truly use this path, revisit the placeholder indexing logic.
         insert_cols.insert(insert_cols.index("IS_ACTIVE"), "MANAGER_EMAIL_2")
-        insert_vals.insert(insert_vals.index("%s", 0) + 7, "%s")  # after MANAGER_EMAIL placeholder
+        insert_vals.insert(7, "%s")
         insert_params.insert(7, manager_email_2 or None)
 
     if has_extra:
         update_sets.append("EXTRA_CC_EMAIL    = %s")
         update_params.append(extra_cc_email or None)
         insert_cols.insert(insert_cols.index("IS_ACTIVE"), "EXTRA_CC_EMAIL")
-        insert_vals.insert(insert_vals.index("%s", 0) + (8 if has_mgr2 else 7), "%s")
+        insert_vals.insert(7 + (1 if has_mgr2 else 0), "%s")
         insert_params.insert(7 + (1 if has_mgr2 else 0), extra_cc_email or None)
 
     update_sets.append("IS_ACTIVE         = %s")
@@ -587,3 +604,174 @@ def deactivate_contact_by_id(conn, *, tenant_id: int, salesperson_id: int) -> No
             """,
             (tid, sid),
         )
+
+
+# =============================================================================
+# Reassignment logic (operational tables)
+# =============================================================================
+
+REASSIGNMENT_TABLE_MAP: Dict[str, str] = {
+    "CUSTOMERS": "SALESPERSON",
+    "EXECUTION_SUMMARY_TMP": "SALESPERSON",
+    "EXECUTION_SUMMARY_TMP2": "SALESPERSON",
+    "GAP_REPORT_SNAPSHOT": "SALESPERSON_NAME",
+    "GAP_REPORT_TMP": "SALESPERSON",
+    "GAP_REPORT_TMP2": "SALESPERSON",
+    "SALESPERSON_EXECUTION_SUMMARY_TBL": "SALESPERSON",
+}
+
+
+def _table_has_column(conn, table_name: str, column_name: str) -> bool:
+    """
+    Return True if the table has the column (case-insensitive).
+
+    Uses DESC TABLE to avoid INFORMATION_SCHEMA issues/permissions.
+    """
+    table_name = _qualify_ident(table_name)
+    col = (column_name or "").strip().upper()
+    if not col:
+        return False
+
+    with conn.cursor() as cur:
+        cur.execute(f"DESC TABLE {table_name}")
+        rows = cur.fetchall()
+
+    cols = {str(r[0]).strip().upper() for r in rows} if rows else set()
+    return col in cols
+
+
+def preview_salesperson_reassignment(
+    conn,
+    *,
+    tenant_id: int,
+    old_salesperson: str,
+    table_map: Dict[str, str] = REASSIGNMENT_TABLE_MAP,
+) -> Dict[str, int]:
+    """
+    Return counts by table of rows that would be updated for the old salesperson label.
+    """
+    tid = int(tenant_id)
+    old_norm = _normalize_salesperson_label(old_salesperson)
+    if not old_norm:
+        raise InvalidInputError("old_salesperson is required.")
+
+    results: Dict[str, int] = {}
+
+    with conn.cursor() as cur:
+        for table_name, col_name in table_map.items():
+            table_name = _qualify_ident(table_name)
+            col_name = _qualify_ident(col_name)
+
+            has_tenant = _table_has_column(conn, table_name, "TENANT_ID")
+
+            if has_tenant:
+                sql = f"""
+                    SELECT COUNT(*)
+                      FROM {table_name}
+                     WHERE TENANT_ID = %s
+                       AND UPPER({col_name}) = UPPER(%s)
+                """
+                params = (tid, old_norm)
+            else:
+                sql = f"""
+                    SELECT COUNT(*)
+                      FROM {table_name}
+                     WHERE UPPER({col_name}) = UPPER(%s)
+                """
+                params = (old_norm,)
+
+            cur.execute(sql, params)
+            results[table_name] = int(cur.fetchone()[0])
+
+    return results
+
+
+def apply_salesperson_reassignment(
+    conn,
+    *,
+    tenant_id: int,
+    old_salesperson: str,
+    new_salesperson: str,
+    table_map: Dict[str, str] = REASSIGNMENT_TABLE_MAP,
+    update_sales_contacts: bool = False,  # ✅ SAFE DEFAULT
+) -> Dict[str, int]:
+    """
+    Update operational tables replacing old salesperson label with new label.
+
+    By default, this DOES NOT rename SALES_CONTACTS rows.
+    If update_sales_contacts=True:
+      - ensures the new salesperson contact is active (does not overwrite email fields)
+      - deactivates old salesperson contact
+    """
+    tid = int(tenant_id)
+    old_norm = _normalize_salesperson_label(old_salesperson)
+    new_norm = _normalize_salesperson_label(new_salesperson)
+
+    if not old_norm:
+        raise InvalidInputError("old_salesperson is required.")
+    if not new_norm:
+        raise InvalidInputError("new_salesperson is required.")
+    if old_norm == new_norm:
+        raise InvalidInputError("old_salesperson and new_salesperson are the same after normalization.")
+
+    updated_counts: Dict[str, int] = {}
+
+    with conn.cursor() as cur:
+        for table_name, col_name in table_map.items():
+            table_name = _qualify_ident(table_name)
+            col_name = _qualify_ident(col_name)
+
+            has_tenant = _table_has_column(conn, table_name, "TENANT_ID")
+
+            if has_tenant:
+                sql = f"""
+                    UPDATE {table_name}
+                       SET {col_name} = %s
+                     WHERE TENANT_ID = %s
+                       AND UPPER({col_name}) = UPPER(%s)
+                """
+                params = (new_norm, tid, old_norm)
+            else:
+                sql = f"""
+                    UPDATE {table_name}
+                       SET {col_name} = %s
+                     WHERE UPPER({col_name}) = UPPER(%s)
+                """
+                params = (new_norm, old_norm)
+
+            cur.execute(sql, params)
+            updated_counts[table_name] = int(cur.rowcount or 0)
+
+        if update_sales_contacts:
+            # DO NOT rename the old row to the new name.
+            # Instead: deactivate old and ensure new is active.
+            cur.execute(
+                """
+                UPDATE SALES_CONTACTS
+                   SET IS_ACTIVE = FALSE,
+                       UPDATED_AT = CURRENT_TIMESTAMP()
+                 WHERE TENANT_ID = %s
+                   AND UPPER(SALESPERSON_NAME) = UPPER(%s)
+                """,
+                (tid, old_norm),
+            )
+            updated_counts["SALES_CONTACTS_DEACTIVATED"] = int(cur.rowcount or 0)
+
+            cur.execute(
+                """
+                UPDATE SALES_CONTACTS
+                   SET IS_ACTIVE = TRUE,
+                       UPDATED_AT = CURRENT_TIMESTAMP()
+                 WHERE TENANT_ID = %s
+                   AND UPPER(SALESPERSON_NAME) = UPPER(%s)
+                """,
+                (tid, new_norm),
+            )
+            updated_counts["SALES_CONTACTS_ACTIVATED"] = int(cur.rowcount or 0)
+
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+    return updated_counts

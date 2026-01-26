@@ -1,4 +1,5 @@
 ﻿# utils/gap_history_mailer.py
+# -*- coding: utf-8 -*-
 """
 Gap History Emailer (PDF + summary)
 -----------------------------------
@@ -7,8 +8,9 @@ Page overview for future devs:
 - Sends Gap History PDFs (from GAP_CURRENT_STREAKS) to:
     - salesperson (TO)
     - manager (CC)
-- Email body includes a short execution-style summary AND the Weekly Execution Focus table
-  computed from the latest GAP_REPORT_SNAPSHOT week.
+- Email body includes:
+    - streak distribution summary
+    - optional Weekly Execution Focus table (latest GAP_REPORT_SNAPSHOT week)
 - Attachment is the Gap History PDF (per salesperson).
 
 Hard rules:
@@ -17,15 +19,15 @@ Hard rules:
 - It assumes snapshots are already published for the current week.
 
 Data contract:
-- DO NOT enrich ADDRESS outside this module.
-- fetch_current_streaks() is the single source of truth for enriched streak rows
-  (preview/download/email should all call it).
+- fetch_current_streaks() is the single source of truth for streak rows
+  enriched with customer address fields (CUSTOMERS join).
+- The PDF input contract is GAP_HISTORY_PDF_COLUMNS (from utils.pdf_reports).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -33,9 +35,38 @@ from utils.email_utils import send_email_with_attachment
 from utils.pdf_reports import GAP_HISTORY_PDF_COLUMNS, build_gap_streaks_pdf
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Small utilities (pure helpers)
+# =============================================================================
+def _upper(s: object) -> str:
+    return str(s or "").strip().upper()
+
+
+def _coerce_int_series(s: pd.Series, default: int = 1) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").fillna(default).astype(int)
+
+
+def _safe_float(x: object, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _safe_int(x: object, default: int = 0) -> int:
+    try:
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def _safe_name_for_file(name: str) -> str:
+    return str(name or "salesperson").strip().replace(" ", "_").replace("/", "-").replace("\\", "-")
+
+
+# =============================================================================
 # Contacts
-# -----------------------------------------------------------------------------
+# =============================================================================
 def load_sales_contacts(con, tenant_id: int) -> pd.DataFrame:
     """
     Load active contacts from SALES_CONTACTS.
@@ -43,20 +74,19 @@ def load_sales_contacts(con, tenant_id: int) -> pd.DataFrame:
     Returns columns:
       SALESPERSON_NAME, SALESPERSON_EMAIL, MANAGER_NAME, MANAGER_EMAIL, SALESPERSON_NAME_UPPER
     """
+    sql = """
+        SELECT
+          SALESPERSON_NAME,
+          SALESPERSON_EMAIL,
+          MANAGER_NAME,
+          MANAGER_EMAIL
+        FROM SALES_CONTACTS
+        WHERE TENANT_ID = %s
+          AND IS_ACTIVE = TRUE
+    """.strip()
+
     with con.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-              SALESPERSON_NAME,
-              SALESPERSON_EMAIL,
-              MANAGER_NAME,
-              MANAGER_EMAIL
-            FROM SALES_CONTACTS
-            WHERE TENANT_ID = %s
-              AND IS_ACTIVE = TRUE
-            """,
-            (int(tenant_id),),
-        )
+        cur.execute(sql, (int(tenant_id),))
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
 
@@ -66,9 +96,9 @@ def load_sales_contacts(con, tenant_id: int) -> pd.DataFrame:
     return df
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Streaks (enriched with address)
-# -----------------------------------------------------------------------------
+# =============================================================================
 def fetch_current_streaks(
     con,
     tenant_id: int,
@@ -79,11 +109,6 @@ def fetch_current_streaks(
 ) -> pd.DataFrame:
     """
     Fetch current streak rows from GAP_CURRENT_STREAKS, enriched with customer fields from CUSTOMERS.
-
-    Why this exists:
-    - GAP_CURRENT_STREAKS does NOT contain ADDRESS.
-    - CUSTOMERS does.
-    - This function is the ONE shared data path for preview/download/email.
 
     Join keys:
     - TENANT_ID + CHAIN_NAME + STORE_NUMBER
@@ -96,7 +121,7 @@ def fetch_current_streaks(
     params: List[object] = [int(tenant_id), int(min_streak)]
 
     def add_in(col: str, vals: Optional[List[str]]) -> None:
-        clean = [v for v in (vals or []) if v]
+        clean = [v for v in (vals or []) if str(v).strip()]
         if not clean:
             return
         placeholders = ", ".join(["%s"] * len(clean))
@@ -138,7 +163,8 @@ def fetch_current_streaks(
           s.UPC,
           s.PRODUCT_NAME,
           s.SUPPLIER_NAME,
-          s.STREAK_WEEKS
+          s.STREAK_WEEKS,
+          s.GAP_FLAG
         FROM GAP_CURRENT_STREAKS s
         LEFT JOIN c_dedup c
           ON c.TENANT_ID = TO_VARCHAR(s.TENANT_ID)
@@ -147,9 +173,9 @@ def fetch_current_streaks(
          AND c.rn = 1
         WHERE {" AND ".join(where_parts)}
         ORDER BY s.SALESPERSON_NAME, s.STREAK_WEEKS DESC, s.CHAIN_NAME, s.STORE_NUMBER, s.PRODUCT_NAME
-    """
+    """.strip()
 
-    # params are for the main query; we need tenant_id first for the CUSTOMERS CTE
+    # 1st param belongs to the CUSTOMERS CTE, then the rest are main WHERE params
     params_with_cte = [str(tenant_id)] + params
 
     with con.cursor() as cur:
@@ -157,20 +183,29 @@ def fetch_current_streaks(
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
 
-    return pd.DataFrame(rows, columns=cols)
+    df = pd.DataFrame(rows, columns=cols)
+    if df.empty:
+        return df
+
+    # Normalize streaks to int for downstream filters/summaries
+    if "STREAK_WEEKS" in df.columns:
+        df["STREAK_WEEKS"] = _coerce_int_series(df["STREAK_WEEKS"], default=1)
+
+    return df
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Weekly Execution Focus (latest snapshot week)
-# -----------------------------------------------------------------------------
-def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> pd.DataFrame:
+# =============================================================================
+def fetch_execution_summary_df(con, tenant_id: int, salesperson_name: str) -> pd.DataFrame:
     """
+    Public function:
     Fetch Weekly Execution Focus for one salesperson for the tenant's latest snapshot week.
 
-    Rules:
-    - Use bind params (%s). No f-strings.
-    - No SQL interpolation.
-    - No "sql % params" logging (breaks %s + tuples).
+    This function is deliberately public so BOTH:
+    - email sender path
+    - download/preview page path
+    can use the exact same computation (keeps PDFs identical).
     """
     sql = """
     WITH latest AS (
@@ -207,14 +242,7 @@ def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> 
     GROUP BY SALESPERSON_NAME
     """.strip()
 
-    params = (
-        int(tenant_id),
-        int(tenant_id),
-        str(salesperson_name or "").strip(),
-    )
-
-    #print("EXECUTION FOCUS SQL:\n", sql)
-
+    params = (int(tenant_id), int(tenant_id), str(salesperson_name or "").strip())
 
     with con.cursor() as cur:
         cur.execute(sql, params)
@@ -224,15 +252,15 @@ def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> 
     return pd.DataFrame(rows, columns=cols)
 
 
+# Backwards-compatible alias (keep older imports working)
+def fetch_weekly_execution_focus(con, tenant_id: int, salesperson_name: str) -> pd.DataFrame:
+    """Backward-compatible name -> calls the canonical execution fetcher."""
+    return fetch_execution_summary_df(con, tenant_id, salesperson_name)
 
 
-
-
-
-
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Summary HTML (email-safe)
-# -----------------------------------------------------------------------------
+# =============================================================================
 def build_summary_html(
     salesperson_name: str,
     sp_df: pd.DataFrame,
@@ -247,15 +275,19 @@ def build_summary_html(
     - execution_df is optional; when provided it renders the Weekly Execution Focus table.
     """
     df = sp_df.copy()
-    df["STREAK_WEEKS"] = pd.to_numeric(df.get("STREAK_WEEKS"), errors="coerce").fillna(1).astype(int)
+
+    if "STREAK_WEEKS" in df.columns:
+        df["STREAK_WEEKS"] = _coerce_int_series(df["STREAK_WEEKS"], default=1)
+    else:
+        df["STREAK_WEEKS"] = 1
 
     active_gaps = int(len(df))
     new_this_week = int((df["STREAK_WEEKS"] == 1).sum())
     two_three = int(df["STREAK_WEEKS"].isin([2, 3]).sum())
     four_plus = int((df["STREAK_WEEKS"] >= 4).sum())
 
-    top_chains = df["CHAIN_NAME"].fillna("Unknown").value_counts().head(3).to_dict()
-    top_suppliers = df["SUPPLIER_NAME"].fillna("Unknown").value_counts().head(3).to_dict()
+    top_chains = df.get("CHAIN_NAME", pd.Series(dtype=str)).fillna("Unknown").value_counts().head(3).to_dict()
+    top_suppliers = df.get("SUPPLIER_NAME", pd.Series(dtype=str)).fillna("Unknown").value_counts().head(3).to_dict()
 
     def _bullet_lines(d: dict) -> str:
         if not d:
@@ -267,13 +299,14 @@ def build_summary_html(
             return ""
 
         r = exe.iloc[0].to_dict()
-        salesman = str(r.get("SALESMAN", salesperson_name) or salesperson_name)
-        in_sch = int(r.get("IN_SCHEMATIC", 0) or 0)
-        fulfilled = int(r.get("FULFILLED", 0) or 0)
-        gaps = int(r.get("GAPS", 0) or 0)
-        placement_90 = float(r.get("PLACEMENT_NEEDED_FOR_90", 0) or 0)
-        pct_exec = int(r.get("PCT_EXECUTION", 0) or 0)
-        gaps_away = float(r.get("GAPS_AWAY_FROM_90", 0) or 0)
+
+        salesman = str(r.get("SALESMAN") or salesperson_name)
+        in_sch = _safe_int(r.get("IN_SCHEMATIC"), 0)
+        fulfilled = _safe_int(r.get("FULFILLED"), 0)
+        gaps = _safe_int(r.get("GAPS"), 0)
+        placement_90 = _safe_float(r.get("PLACEMENT_NEEDED_FOR_90"), 0.0)
+        pct_exec = _safe_int(r.get("PCT_EXECUTION"), 0)
+        gaps_away = _safe_float(r.get("GAPS_AWAY_FROM_90"), 0.0)
 
         return f"""
         <div class="section">
@@ -376,9 +409,9 @@ def build_summary_html(
 """.strip()
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Orchestrator
-# -----------------------------------------------------------------------------
+# =============================================================================
 def send_gap_history_pdfs(
     con,
     tenant_id: int,
@@ -432,12 +465,10 @@ def send_gap_history_pdfs(
             "errors": [],
         }
 
-    streaks_df["SALESPERSON_NAME_UPPER"] = (
-        streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
-    )
+    streaks_df["SALESPERSON_NAME_UPPER"] = streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
 
     if only_salespeople:
-        wanted = {str(x).strip().upper() for x in only_salespeople if x}
+        wanted = {_upper(x) for x in only_salespeople if str(x).strip()}
         streaks_df = streaks_df[streaks_df["SALESPERSON_NAME_UPPER"].isin(wanted)]
 
     success = 0
@@ -447,29 +478,23 @@ def send_gap_history_pdfs(
 
     for sp_key, sp_df in streaks_df.groupby("SALESPERSON_NAME_UPPER"):
         if not sp_key or sp_key not in contact_lookup.index:
-            skipped.append(sp_key)
+            skipped.append(sp_key or "(missing salesperson)")
             continue
 
         contact = contact_lookup.loc[sp_key]
-        salesperson_name = contact["SALESPERSON_NAME"]
+        salesperson_name = str(contact.get("SALESPERSON_NAME") or "").strip() or sp_key
         to_email = str(contact.get("SALESPERSON_EMAIL") or "").strip()
         cc_email = str(contact.get("MANAGER_EMAIL") or "").strip() or None
 
         if not to_email:
             skipped.append(salesperson_name)
             continue
-            
-
 
         try:
-            # 1) Weekly Execution Focus
-            import inspect
-            print("fetch_weekly_execution_focus file:", inspect.getsourcefile(fetch_weekly_execution_focus))
-            print("fetch_weekly_execution_focus first line:", inspect.getsourcelines(fetch_weekly_execution_focus)[1])
+            # 1) Weekly Execution Focus (canonical function)
+            execution_df = fetch_execution_summary_df(con, tenant_id, salesperson_name)
 
-            execution_df = fetch_weekly_execution_focus(con, tenant_id, salesperson_name)
-
-            # 2) PDF
+            # 2) PDF (use contract columns)
             pdf_df = sp_df[[c for c in GAP_HISTORY_PDF_COLUMNS if c in sp_df.columns]].copy()
             pdf_bytes = build_gap_streaks_pdf(
                 pdf_df,
@@ -480,16 +505,15 @@ def send_gap_history_pdfs(
 
             # 3) HTML
             html_body = build_summary_html(
-                salesperson_name,
-                sp_df,
+                salesperson_name=salesperson_name,
+                sp_df=sp_df,
                 tenant_name=tenant_name,
                 execution_df=execution_df,
             )
 
             # 4) Send
-            safe_name = salesperson_name.replace(" ", "_")
             subject = f"Gap History Report – {tenant_name}"
-            filename = f"gap_history_{safe_name}.pdf"
+            filename = f"gap_history_{_safe_name_for_file(salesperson_name)}.pdf"
 
             result = send_email_with_attachment(
                 to_email=to_email,
@@ -505,13 +529,11 @@ def send_gap_history_pdfs(
                 success += 1
             else:
                 fail += 1
-                errors.append({"salesperson": salesperson_name, "error": result.get("error")})
+                errors.append({"salesperson": salesperson_name, "error": str(result.get("error") or "unknown")})
 
         except Exception as e:
             fail += 1
             errors.append({"salesperson": salesperson_name, "error": str(e)})
-
-
 
     return {
         "salesperson_success": success,

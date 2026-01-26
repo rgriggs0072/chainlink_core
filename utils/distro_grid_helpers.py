@@ -214,7 +214,7 @@ def format_pivot_table(workbook, selected_option):
         columns={
             "Name": "PRODUCT_NAME",
             "Yes/No": "YES_NO",
-            "SKU #": "SKU",
+            "SKU": "SKU",
         },
         inplace=True,
     )
