@@ -465,34 +465,14 @@ def send_gap_history_pdfs(
     """
     Send per-salesperson Gap History emails with PDF attachments.
 
-    What "success" means:
-    - success increments when the email send returns success=True (salesperson TO send succeeded).
-    - CC recipients are best-effort; we track them separately using the SMTP recipient list returned
-      by send_email_with_attachment() (expects result["recipients"]).
-
     Returns:
       {
-        "salesperson_success": int,     # count of successful sends (TO)
-        "salesperson_fail": int,        # count of failed sends (TO)
-        "skipped_salespeople": [str],   # missing contact rows or missing TO email
-        "errors": [{"salesperson": str, "error": str}],
-        "sent_without_cc": [str],       # successful TO send but no CC recipients
-        "salesperson_emailed": int,     # successful TO deliveries
-        "manager_emailed": int,         # successful CC deliveries (count of CC recipients)
-        "total_emails_sent": int,       # total recipients across all successful sends (TO + CC)
+        "salesperson_success": int,
+        "salesperson_fail": int,
+        "skipped_salespeople": [str],
+        "errors": [{"salesperson": str, "error": str}]
       }
     """
-
-    # -----------------------------
-    # Delivery metrics (truthful)
-    # -----------------------------
-    salesperson_emailed = 0
-    manager_emailed = 0
-    total_emails_sent = 0
-
-    # -----------------------------
-    # Contacts
-    # -----------------------------
     contacts_df = load_sales_contacts(con, tenant_id)
     if contacts_df.empty:
         return {
@@ -500,10 +480,6 @@ def send_gap_history_pdfs(
             "salesperson_fail": 0,
             "skipped_salespeople": ["(no SALES_CONTACTS rows)"],
             "errors": [],
-            "sent_without_cc": [],
-            "salesperson_emailed": 0,
-            "manager_emailed": 0,
-            "total_emails_sent": 0,
         }
 
     contact_lookup = (
@@ -511,9 +487,6 @@ def send_gap_history_pdfs(
         .set_index("SALESPERSON_NAME_UPPER")
     )
 
-    # -----------------------------
-    # Streak rows (address-enriched)
-    # -----------------------------
     streaks_df = fetch_current_streaks(
         con=con,
         tenant_id=tenant_id,
@@ -529,28 +502,18 @@ def send_gap_history_pdfs(
             "salesperson_fail": 0,
             "skipped_salespeople": ["(no streak rows matched filters)"],
             "errors": [],
-            "sent_without_cc": [],
-            "salesperson_emailed": 0,
-            "manager_emailed": 0,
-            "total_emails_sent": 0,
         }
 
-    streaks_df["SALESPERSON_NAME_UPPER"] = (
-        streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
-    )
+    streaks_df["SALESPERSON_NAME_UPPER"] = streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
 
     if only_salespeople:
         wanted = {_upper(x) for x in only_salespeople if str(x).strip()}
         streaks_df = streaks_df[streaks_df["SALESPERSON_NAME_UPPER"].isin(wanted)]
 
-    # -----------------------------
-    # Orchestrate sends
-    # -----------------------------
     success = 0
     fail = 0
     skipped: List[str] = []
     errors: List[dict] = []
-    sent_without_cc: List[str] = []
 
     for sp_key, sp_df in streaks_df.groupby("SALESPERSON_NAME_UPPER"):
         if not sp_key or sp_key not in contact_lookup.index:
@@ -560,17 +523,16 @@ def send_gap_history_pdfs(
         contact = contact_lookup.loc[sp_key]
         salesperson_name = str(contact.get("SALESPERSON_NAME") or "").strip() or sp_key
         to_email = str(contact.get("SALESPERSON_EMAIL") or "").strip()
+        cc_list = _build_cc_list(contact)
+        cc_email = ", ".join(cc_list) if cc_list else None
 
-        # CC: keep as list (send_email_with_attachment will normalize anyway)
-        cc_list = _build_cc_list(contact)  # List[str]
-        cc_email = cc_list                 # ✅ pass list through (not comma string)
 
         if not to_email:
             skipped.append(salesperson_name)
             continue
 
         try:
-            # 1) Weekly Execution Focus (header summary)
+            # 1) Weekly Execution Focus (canonical function)
             execution_df = fetch_execution_summary_df(con, tenant_id, salesperson_name)
 
             # 2) PDF (use contract columns)
@@ -582,7 +544,7 @@ def send_gap_history_pdfs(
                 execution_df=execution_df,
             )
 
-            # 3) HTML body
+            # 3) HTML
             html_body = build_summary_html(
                 salesperson_name=salesperson_name,
                 sp_df=sp_df,
@@ -594,9 +556,15 @@ def send_gap_history_pdfs(
             subject = f"Gap History Report – {tenant_name}"
             filename = f"gap_history_{_safe_name_for_file(salesperson_name)}.pdf"
 
+            # print("DEBUG SEND:",
+            #   "SP=", salesperson_name,
+            #   "TO=", to_email,
+            #   "CC_LIST=", cc_list,
+            #   "CC_EMAIL=", cc_email)
+
             result = send_email_with_attachment(
                 to_email=to_email,
-                cc_email=cc_email,  # ✅ list
+                cc_email=cc_email,
                 subject=subject,
                 html=html_body,
                 from_email=sender_email,
@@ -606,24 +574,9 @@ def send_gap_history_pdfs(
 
             if result.get("success"):
                 success += 1
-
-                # truthful metrics based on actual SMTP recipient list
-                recipients = result.get("recipients") or []
-                salesperson_emailed += 1  # TO was delivered
-                total_emails_sent += len(recipients) if recipients else 1
-                manager_emailed += max(0, (len(recipients) - 1)) if recipients else 0
-
-                # if no CC recipients at all
-                if not cc_list:
-                    sent_without_cc.append(salesperson_name)
-
             else:
                 fail += 1
-                errors.append({
-                    "salesperson": salesperson_name,
-                    "error": result.get("error"),
-                    "refused": result.get("refused", []),
-                })
+                errors.append({"salesperson": salesperson_name, "error": str(result.get("error") or "unknown")})
 
         except Exception as e:
             fail += 1
@@ -634,12 +587,7 @@ def send_gap_history_pdfs(
         "salesperson_fail": fail,
         "skipped_salespeople": skipped,
         "errors": errors,
-        "sent_without_cc": sent_without_cc,
-        "salesperson_emailed": salesperson_emailed,
-        "manager_emailed": manager_emailed,
-        "total_emails_sent": total_emails_sent,
     }
-
 
 
 

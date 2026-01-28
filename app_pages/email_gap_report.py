@@ -68,6 +68,13 @@ SESSION_DEFAULTS = {
 # =============================================================================
 # Helper functions (pure / no Streamlit UI)
 # =============================================================================
+
+def _clear_ghm_state() -> None:
+    """Clear cached results so Preview + Downloads resets after sending."""
+    for k in ("ghm_results", "ghm_selected_sp", "ghm_filters_hash"):
+        st.session_state[k] = None
+
+
 def _filters_hash(
     chains: List[str],
     suppliers: List[str],
@@ -210,8 +217,28 @@ def render() -> None:
     4) Preview + downloads (single PDF + all ZIP)
     5) Send emails (single or all)
     """
+    # -------------------------------------------------------------------------
+    # Clear stale Preview + Downloads when user returns to this page
+    # (but NOT immediately after sending, so we don't hide results)
+    # -------------------------------------------------------------------------
+    page_key = "email_gap_report"
+    nav_key = "_last_page"
+
+    current_page = page_key
+    last_page = st.session_state.get(nav_key)
+
+    # If we weren't on this page last run, we just "entered" it
+    if last_page != current_page:
+        # Clear preview/download cached state
+        for k in ("ghm_results", "ghm_selected_sp", "ghm_filters_hash"):
+            st.session_state[k] = None
+
+    st.session_state[nav_key] = current_page
+
+
     for k, v in SESSION_DEFAULTS.items():
         st.session_state.setdefault(k, v)
+
 
     st.title(PAGE_TITLE)
 
@@ -526,13 +553,29 @@ def render() -> None:
             min_streak=res["min_streak"],
             only_salespeople=[selected_sp],
         )
-        st.success(f"Sent: {result.get('salesperson_success', 0)} | Failed: {result.get('salesperson_fail', 0)}")
+
+        st.success(
+            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+            f"CCs: {result.get('manager_emailed', 0)})"
+        )
+
+        
         if result.get("errors"):
-            st.subheader("Errors")
+            st.error("Some emails were partially refused by SMTP")
             st.json(result["errors"])
-        if result.get("skipped_salespeople"):
-            st.subheader("Skipped")
-            st.write(result["skipped_salespeople"])
+
+        if result.get("sent_without_cc"):
+            st.warning(
+                "Sent without CC for: "
+                + ", ".join(result["sent_without_cc"])
+            )
+
+        
+
+
 
     if s2.button("Send ALL", type="secondary", width="stretch"):
         result = send_gap_history_pdfs(
@@ -546,13 +589,29 @@ def render() -> None:
             min_streak=res["min_streak"],
             only_salespeople=sp_list,
         )
-        st.success(f"Sent: {result.get('salesperson_success', 0)} | Failed: {result.get('salesperson_fail', 0)}")
+
+        st.success(
+            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+            f"CCs: {result.get('manager_emailed', 0)})"
+        )
+
+       
         if result.get("errors"):
-            st.subheader("Errors")
+            st.error("Some emails were partially refused by SMTP")
             st.json(result["errors"])
-        if result.get("skipped_salespeople"):
-            st.subheader("Skipped")
-            st.write(result["skipped_salespeople"])
+
+        if result.get("sent_without_cc"):
+            st.warning(
+                "Sent without CC for: "
+                + ", ".join(result["sent_without_cc"])
+            )
+
+        
+
+
 
     if s3.button("Clear", width="stretch"):
         for k in SESSION_DEFAULTS:

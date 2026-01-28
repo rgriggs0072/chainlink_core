@@ -619,11 +619,12 @@ def send_gap_history_pdfs(
 
             else:
                 fail += 1
-                errors.append({
-                    "salesperson": salesperson_name,
-                    "error": result.get("error"),
-                    "refused": result.get("refused", []),
-                })
+                errors.append(
+                    {
+                        "salesperson": salesperson_name,
+                        "error": str(result.get("error") or "unknown"),
+                    }
+                )
 
         except Exception as e:
             fail += 1
