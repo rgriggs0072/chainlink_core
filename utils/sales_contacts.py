@@ -610,6 +610,11 @@ def deactivate_contact_by_id(conn, *, tenant_id: int, salesperson_id: int) -> No
 # Reassignment logic (operational tables)
 # =============================================================================
 
+# IMPORTANT:
+# When adding new operational tables that contain salesperson labels,
+# they MUST be added here or reassignment will silently skip them.
+
+
 REASSIGNMENT_TABLE_MAP: Dict[str, str] = {
     "CUSTOMERS": "SALESPERSON",
     "EXECUTION_SUMMARY_TMP": "SALESPERSON",
@@ -618,6 +623,7 @@ REASSIGNMENT_TABLE_MAP: Dict[str, str] = {
     "GAP_REPORT_TMP": "SALESPERSON",
     "GAP_REPORT_TMP2": "SALESPERSON",
     "SALESPERSON_EXECUTION_SUMMARY_TBL": "SALESPERSON",
+    "SALES_REPORT": "SALESPERSON",
 }
 
 
@@ -769,9 +775,6 @@ def apply_salesperson_reassignment(
             )
             updated_counts["SALES_CONTACTS_ACTIVATED"] = int(cur.rowcount or 0)
 
-    try:
-        conn.commit()
-    except Exception:
-        pass
+    
 
     return updated_counts

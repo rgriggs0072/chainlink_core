@@ -276,7 +276,7 @@ def _spacer(px=10):
 # ---------- REQUIRED EXPORT ----------
 def render():
     """Entry point used by app_pages.__init__ to show the Admin page."""
-    st.set_page_config(page_title="Admin", page_icon="🛡️", layout="wide")
+    
 
     # session + role guard
     if "tenant_id" not in st.session_state or "user_email" not in st.session_state:

@@ -229,7 +229,7 @@ def render_sidebar_header(display_name, tenant_config, authenticator):
         logo_path = tenant_config.get("logo_path", "")
         image = add_logo(logo_path, width=160)
         if image:
-            st.image(image, width="content")
+            st.image(image, width=160)
         else:
             st.warning("Logo not available")
 

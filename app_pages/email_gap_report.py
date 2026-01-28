@@ -541,7 +541,8 @@ def render() -> None:
 
     s1, s2, s3 = st.columns([1, 1, 0.7])
 
-    if s1.button(f"Send {selected_sp} Only", type="primary", width="stretch"):
+    if s1.button(f"Send {selected_sp} Only", type="primary", use_container_width=True):
+
         result = send_gap_history_pdfs(
             con=conn,
             tenant_id=tenant_id,
@@ -577,7 +578,8 @@ def render() -> None:
 
 
 
-    if s2.button("Send ALL", type="secondary", width="stretch"):
+    if s2.button("Send ALL", type="secondary", use_container_width=True):
+
         result = send_gap_history_pdfs(
             con=conn,
             tenant_id=tenant_id,
@@ -613,7 +615,8 @@ def render() -> None:
 
 
 
-    if s3.button("Clear", width="stretch"):
+    if s3.button("Clear", use_container_width=True):
+
         for k in SESSION_DEFAULTS:
             st.session_state[k] = None
         st.rerun()
