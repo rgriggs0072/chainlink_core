@@ -135,7 +135,7 @@ def render():
     # Filter options
     # ------------------------------------------------------------------
     try:
-        salesperson_options = fetch_distinct_values(conn, "SALESPERSON", "SALESPERSON")
+        salesperson_options = fetch_distinct_values(conn, "CUSTOMERS", "SALESPERSON")
         store_options = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
         supplier_options = fetch_distinct_values(conn, "SUPPLIER_COUNTY", "SUPPLIER")
     except Exception as e:
