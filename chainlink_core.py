@@ -48,6 +48,8 @@ from nav.navigation_bar import (
 
 )
 
+from nav.task_indicator import render_task_indicator, render_task_sidebar_card
+
 def _safe_import(module_path: str):
     """
     Lazy-import a page module by dotted path (e.g., 'app_pages.gap_report').
@@ -235,6 +237,8 @@ def render_sidebar_header(display_name, tenant_config, authenticator):
 
         st.success(f"Welcome, {display_name}!")
         handle_logout(authenticator)
+        render_task_sidebar_card(conn=st.session_state.get("conn"),
+                                 tenant_id=st.session_state.get("tenant_id"))
 
         st.markdown("---")
         st.markdown(
@@ -269,6 +273,7 @@ def main():
     )
 
     name, auth_status, username = authenticator.login("Login", "main")
+
     
 
     # ---------- SUCCESSFUL LOGIN ----------
@@ -317,6 +322,11 @@ def main():
         _refresh_admin_flag()
         display_name = _get_user_full_name_cached(username_lc, st.session_state["tenant_id"]) or name or username_lc
 
+        
+         # Add right before render_navigation() inside main()
+        render_task_indicator(conn=st.session_state["conn"],
+                              tenant_id=st.session_state["tenant_id"])
+        
         # Sidebar + top nav
         render_sidebar_header(display_name, tenant_config, authenticator)
         is_admin = bool(st.session_state.get("is_admin"))
@@ -324,6 +334,9 @@ def main():
         if not selected_main:
             st.error("Navigation menu failed to render or returned no selection.")
             return
+
+
+        
 
         # ---------- Routing Menus ----------
         if selected_main == "Home":
@@ -411,6 +424,8 @@ def main():
             return
 
         st.warning("Unknown menu selection.")
+
+       
 
     # ---------- FAILED LOGIN ----------
     elif auth_status is False:
