@@ -1,0 +1,4 @@
+# Packages being tested for upgrade
+streamlit==1.43.0
+streamlit-authenticator==0.4.2
+extra-streamlit-components>=0.1.71

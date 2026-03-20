@@ -11,6 +11,8 @@ Key notes:
 - Admin visibility: computed every run via is_admin_user(email, tenant_id); cached in st.session_state["is_admin"].
 - Navigation: pass show_admin=st.session_state["is_admin"] to render_navigation().
 - Deep-link protection: verify admin before rendering Admin page.
+- streamlit-authenticator 0.4.2: login() no longer returns a tuple;
+  results are stored in st.session_state["name"], ["authentication_status"], ["username"].
 """
 
 import streamlit as st
@@ -37,32 +39,23 @@ from utils.auth_utils import (
 from app_pages.predictive_purchases import render as predictive_purchases_page
 from app_pages import driver_forecast
 
-
-# Nav imports (render_navigation takes show_admin: bool)
 from nav.navigation_bar import (
     render_navigation,
     render_format_upload_submenu,
     render_reports_submenu,
-    render_ai_forecasts_submenu, 
+    render_ai_forecasts_submenu,
     render_admin_submenu,
-
 )
-
 from nav.task_indicator import render_task_indicator, render_task_sidebar_card
 
+
 def _safe_import(module_path: str):
-    """
-    Lazy-import a page module by dotted path (e.g., 'app_pages.gap_report').
-    Returns the module or raises ImportError for upstream handling.
-    """
+    """Lazy-import a page module by dotted path."""
     import importlib
     return importlib.import_module(module_path)
 
 
 # ---------------- Page Config & Global Styles ----------------
-import streamlit as st
-from streamlit.components.v1 import html
-
 st.set_page_config(
     page_title="Chainlink Analytics",
     page_icon="",
@@ -81,7 +74,6 @@ def hide_sidebar():
         unsafe_allow_html=True,
     )
 
-
 st.markdown(
     """
     <style>
@@ -98,19 +90,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 st.markdown(
     """
     <style>
-    /* Chainlink theme palette */
     :root {
         --primary-color: #6497D6;
         --secondary-color: #B3D7ED;
         --background-color: #F8F2EB;
     }
-    h1, h2, h3 {
-        color: var(--primary-color) !important;
-    }
+    h1, h2, h3 { color: var(--primary-color) !important; }
     div[data-testid="stDataFrameContainer"] table {
         border-radius: 8px;
         overflow: hidden;
@@ -122,15 +110,11 @@ st.markdown(
         border-radius: 6px;
         font-weight: 500;
     }
-    .stDownloadButton button:hover {
-        background-color: #4c7dc0 !important;
-    }
+    .stDownloadButton button:hover { background-color: #4c7dc0 !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-
 
 # ---------------- Session State Init ----------------
 for key in ["authenticated", "tenant_id", "user_email", "conn", "is_admin"]:
@@ -152,18 +136,14 @@ if st.session_state.get("forgot_password_submitted"):
 def clear_auth_cookie():
     """Remove auth cookie created by streamlit_authenticator."""
     cookie_manager = stx.CookieManager()
-    cookie_manager.delete("chainlink_token")  # must match Authenticate() cookie name
+    cookie_manager.delete("chainlink_token")
 
 # ---------------- Display Name Helpers ----------------
 def _fetch_user_full_name_db(email: str, tenant_id: str) -> str:
-    """
-    One-shot DB fetch for FIRST_NAME + LAST_NAME via service account.
-    """
     try:
         email_lc = (email or "").strip().lower()
         if not email_lc or not tenant_id:
             return email
-
         conn = get_service_account_connection()
         try:
             with conn.cursor() as cur:
@@ -176,7 +156,6 @@ def _fetch_user_full_name_db(email: str, tenant_id: str) -> str:
                 row = cur.fetchone()
         finally:
             conn.close()
-
         if not row:
             return email
         first, last = (row[0] or "").strip(), (row[1] or "").strip()
@@ -186,9 +165,6 @@ def _fetch_user_full_name_db(email: str, tenant_id: str) -> str:
         return email
 
 def _get_user_full_name_cached(email: str, tenant_id: str) -> str:
-    """
-    Session-level cache for the display name.
-    """
     cache_key = "display_name"
     if st.session_state.get(cache_key):
         return st.session_state[cache_key]
@@ -196,13 +172,8 @@ def _get_user_full_name_cached(email: str, tenant_id: str) -> str:
     st.session_state[cache_key] = name
     return name
 
-# ---------------- Login Status Probe (for failed logins) ----------------
+# ---------------- Login Status Probe ----------------
 def _probe_user_status(email: str) -> tuple[bool | None, bool | None, bool]:
-    """
-    Returns (is_active, is_locked, exists) by EMAIL across any tenant row.
-    Used only for messaging in the failed-login branch to avoid incrementing attempts
-    for disabled/locked accounts.
-    """
     try:
         email_lc = (email or "").strip().lower()
         if not email_lc:
@@ -237,9 +208,10 @@ def render_sidebar_header(display_name, tenant_config, authenticator):
 
         st.success(f"Welcome, {display_name}!")
         handle_logout(authenticator)
-        render_task_sidebar_card(conn=st.session_state.get("conn"),
-                                 tenant_id=st.session_state.get("tenant_id"))
-
+        render_task_sidebar_card(
+            conn=st.session_state.get("conn"),
+            tenant_id=st.session_state.get("tenant_id"),
+        )
         st.markdown("---")
         st.markdown(
             "<div style='font-size: 0.65rem; color: gray;'>© 2025 Chainlink Analytics LLC. All rights reserved.</div>",
@@ -248,38 +220,38 @@ def render_sidebar_header(display_name, tenant_config, authenticator):
 
 # ---------------- Admin Flag Helper ----------------
 def _refresh_admin_flag():
-    """
-    Compute and cache whether the current user is an admin for their tenant.
-    Called after successful auth and tenant_id/user_email set.
-    """
-    email = st.session_state.get("user_email")
+    email  = st.session_state.get("user_email")
     tenant = st.session_state.get("tenant_id")
     st.session_state["is_admin"] = bool(email and tenant and is_admin_user(email, tenant))
 
-# ---------------- Main ----------------
 # ---------------- Main ----------------
 def main():
     """
     Auth → tenant context → nav → router.
     Admin-only: AI & Forecasts (with server-side guard).
     """
-    
     credentials = fetch_user_credentials()
+
     authenticator = stauth.Authenticate(
         credentials,
         "chainlink_token",
         COOKIE_KEY,
         cookie_expiry_days=0.014,
+        auto_hash=False,    # passwords are already bcrypt-hashed in Snowflake
     )
 
-    name, auth_status, username = authenticator.login("Login", "main")
+    # 0.4.2: login() renders the form but returns None.
+    # Results are stored in st.session_state automatically.
+    authenticator.login(location="main")
 
-    
+    auth_status = st.session_state.get("authentication_status")
+    username    = st.session_state.get("username")
+    name        = st.session_state.get("name")
 
     # ---------- SUCCESSFUL LOGIN ----------
-    if auth_status:
+    if auth_status is True:
         username_lc = (username or "").strip().lower()
-        user_entry = credentials.get("usernames", {}).get(username_lc)
+        user_entry  = credentials.get("usernames", {}).get(username_lc)
         if not user_entry or not user_entry.get("tenant_id"):
             st.error("Login error: user or tenant data missing")
             return
@@ -294,17 +266,17 @@ def main():
 
         # Session context
         st.session_state["authenticated"] = True
-        st.session_state["user_email"] = username_lc
-        st.session_state["tenant_id"] = user_entry["tenant_id"]
+        st.session_state["user_email"]    = username_lc
+        st.session_state["tenant_id"]     = user_entry["tenant_id"]
 
-        # Tenant config (TOML)
+        # Tenant config
         tenant_config = load_tenant_config(user_entry["tenant_id"])
         if not isinstance(tenant_config, dict):
             st.error("Tenant configuration failed to load or is not a dict.")
             return
 
         st.session_state["tenant_config"] = tenant_config
-        st.session_state["toml_info"] = tenant_config  # legacy compatibility
+        st.session_state["toml_info"]     = tenant_config  # legacy compatibility
 
         # Validate essentials
         required_keys = ["snowflake_user", "account", "private_key", "warehouse", "database", "schema"]
@@ -322,23 +294,22 @@ def main():
         _refresh_admin_flag()
         display_name = _get_user_full_name_cached(username_lc, st.session_state["tenant_id"]) or name or username_lc
 
-        
-         # Add right before render_navigation() inside main()
-        render_task_indicator(conn=st.session_state["conn"],
-                              tenant_id=st.session_state["tenant_id"])
-        
+        # Task indicator bar (above nav)
+        render_task_indicator(
+            conn=st.session_state["conn"],
+            tenant_id=st.session_state["tenant_id"],
+        )
+
         # Sidebar + top nav
         render_sidebar_header(display_name, tenant_config, authenticator)
-        is_admin = bool(st.session_state.get("is_admin"))
-        selected_main = render_navigation(show_admin=is_admin, show_ai=is_admin)  # <-- show AI only for admins
+        is_admin      = bool(st.session_state.get("is_admin"))
+        selected_main = render_navigation(show_admin=is_admin, show_ai=is_admin)
+
         if not selected_main:
             st.error("Navigation menu failed to render or returned no selection.")
             return
 
-
-        
-
-        # ---------- Routing Menus ----------
+        # ---------- Routing ----------
         if selected_main == "Home":
             _safe_import("app_pages.home").render()
             return
@@ -346,11 +317,10 @@ def main():
         if selected_main == "Reports":
             report_page = render_reports_submenu()
             route = {
-                "Gap Report": "app_pages.gap_report",
-                "Email Gap Report": "app_pages.email_gap_report",
-                "Gap History": "app_pages.gap_history",
-                "Data Exports": "app_pages.data_exports",
-                
+                "Gap Report":        "app_pages.gap_report",
+                "Email Gap Report":  "app_pages.email_gap_report",
+                "Gap History":       "app_pages.gap_history",
+                "Data Exports":      "app_pages.data_exports",
             }.get(report_page)
             if not route:
                 st.warning("Invalid report selection.")
@@ -361,9 +331,9 @@ def main():
         if selected_main == "Format and Upload":
             selected_sub = render_format_upload_submenu()
             route = {
-                "Load Company Data": "app_pages.load_company_data",
-                "Reset Schedule Processing": "app_pages.reset_schedule",
-                "Distribution Grid Processing": "app_pages.distro_grid",
+                "Load Company Data":              "app_pages.load_company_data",
+                "Reset Schedule Processing":      "app_pages.reset_schedule",
+                "Distribution Grid Processing":   "app_pages.distro_grid",
             }.get(selected_sub)
             if not route:
                 st.warning("Invalid format/upload selection.")
@@ -371,61 +341,41 @@ def main():
             _safe_import(route).render()
             return
 
-        # --- AI & Forecasts Router (server-side guard + robust mapping) ---
         if selected_main == "AI & Forecasts":
-            # Guard: never render if not admin
             if not is_admin:
-                st.warning("You don’t have access to AI & Forecasts.")
+                st.warning("You don't have access to AI & Forecasts.")
                 st.rerun()
-
-            # The submenu must return one of these labels EXACTLY.
             selected_ai = render_ai_forecasts_submenu()
-
-            # Map submenu label -> module path (uniform, no callables here)
             ai_pages = {
-                "Predictive Purchases": "app_pages.predictive_purchases",
+                "Predictive Purchases":  "app_pages.predictive_purchases",
                 "Predictive Truck Plan": "app_pages.predictive_truck_plan",
-                "AI-Narrative Report": "app_pages.ai_narrative_report",
-                "Placement Intelligence": "app_pages.ai_placement_intelligence",
-               
+                "AI-Narrative Report":   "app_pages.ai_narrative_report",
+                "Placement Intelligence":"app_pages.ai_placement_intelligence",
             }
-
-            # Debug helper: uncomment if you want to see what the submenu returns
-            # st.caption(f"Debug: selected_ai = {selected_ai!r}")
-
             module_path = ai_pages.get(selected_ai)
             if not module_path:
-                # Show a precise error to catch label drift or typos in the submenu
                 st.error(f"Unknown selection from AI & Forecasts menu: {selected_ai!r}")
                 st.info(f"Valid options: {', '.join(ai_pages.keys())}")
             else:
                 _safe_import(module_path).render()
             st.stop()
 
-
-            
-
         if selected_main == "Admin":
             if not is_admin:
-                st.warning("You don’t have access to Admin.")
+                st.warning("You don't have access to Admin.")
                 st.rerun()
-
             admin_page = render_admin_submenu()
             route = {
-                "Admin Dashboard": "app_pages.admin",
+                "Admin Dashboard":      "app_pages.admin",
                 "Sales Contacts Admin": "app_pages.sales_contacts_admin",
             }.get(admin_page)
-
             if not route:
                 st.warning("Invalid admin selection.")
                 return
-
             _safe_import(route).render()
             return
 
         st.warning("Unknown menu selection.")
-
-       
 
     # ---------- FAILED LOGIN ----------
     elif auth_status is False:
@@ -433,7 +383,6 @@ def main():
         if not email_lc:
             st.error("Username or password incorrect")
             return
-
         is_active, is_locked, exists = _probe_user_status(email_lc)
         if exists and is_active is False:
             st.error("Your account is disabled. Contact your administrator.")
@@ -441,7 +390,6 @@ def main():
         if exists and is_locked:
             st.error("Your account is locked. Please contact your administrator.")
             return
-
         increment_failed_attempts(email_lc)
         if is_user_locked_out(email_lc):
             st.error("Account locked due to too many failed login attempts.")
@@ -456,7 +404,6 @@ def main():
             if st.button("Reset Password Link"):
                 st.session_state["forgot_password_submitted"] = True
                 st.rerun()
-
 
 
 if __name__ == "__main__":
