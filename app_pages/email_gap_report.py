@@ -486,7 +486,7 @@ def render() -> None:
         ascending=[False, True, True],
     )
 
-    st.dataframe(sp_df, width="stretch", hide_index=True)
+    st.dataframe(sp_df, width=True, hide_index=True)
     st.write(f"{selected_sp}: {len(sp_df)} active gaps")
 
     # ✅ Execution summary MUST be computed here (runtime), not at import time
@@ -505,7 +505,7 @@ def render() -> None:
         pdf_bytes,
         file_name=f"{_safe_label(selected_sp)}_gap_history.pdf",
         mime="application/pdf",
-        width="stretch",
+        width=True,
     )
 
     # All PDFs ZIP (per-person exec summary so ZIP matches email too)
@@ -523,7 +523,7 @@ def render() -> None:
         _zip_pdfs(all_pdfs, "gap_history"),
         file_name=f"gap_history_{datetime.now():%Y%m%d_%H%M}.zip",
         mime="application/zip",
-        width="stretch",
+        width=True,
     )
 
     # -------------------------------------------------------------------------

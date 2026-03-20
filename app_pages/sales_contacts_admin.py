@@ -591,7 +591,7 @@ def _render_reassignment(conn, tenant_id: int, contacts_df: pd.DataFrame):
 
     with st.expander("View technical details (tables affected)", expanded=False):
         if isinstance(preview_df, pd.DataFrame) and not preview_df.empty:
-            st.dataframe(preview_df, width="stretch")
+            st.dataframe(preview_df, width=True)
         else:
             st.write("No rows would be updated.")
 
@@ -645,7 +645,7 @@ def _render_reassignment(conn, tenant_id: int, contacts_df: pd.DataFrame):
             )
 
             with st.expander("View technical details (tables updated)", expanded=False):
-                st.dataframe(updated_df, width="stretch")
+                st.dataframe(updated_df, width=True)
 
             # Reset state + dropdowns for next reassignment
             st.session_state.pop(REASSIGN_PREVIEW_STATE_KEY, None)

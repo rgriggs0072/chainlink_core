@@ -681,26 +681,40 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
     # 1) Identify & map columns (template-safe + Delta export-safe)
     # ------------------------------------------------------------------
     alias_to_canonical = {
-        "storenumber": "STORE_NUMBER",
+        "storenumber":      "STORE_NUMBER",
         "chainstorenumber": "STORE_NUMBER",
-
-        # 🔴 ADD THIS
-        "customername": "STORE_NAME",
-
-        "storename": "STORE_NAME",
-
-        "shippingaddress": "ADDRESS",
-
+        "storename":        "STORE_NAME",
+        "shippingaddress":  "ADDRESS",
         "salesmanassigned": "SALESPERSON",
-
-        "productname": "PRODUCT_NAME",
-
-        "carrierupc": "UPC",
-
+        "productname":      "PRODUCT_NAME",
+        "carrierupc":       "UPC",
         # explicitly ignore Buyer Count %
-        "buyercount%": None,
+        "buyercount%":      None,
     }
 
+    # ------------------------------------------------------------------
+    # 1a) Encompass-specific: split "Customer Name" (e.g. "CVS # 9904")
+    #     into STORE_NAME (chain name before #) only.
+    #     STORE_NUMBER comes from "Chain Store Number" which is already
+    #     a clean integer — do NOT overwrite it with the # suffix.
+    # ------------------------------------------------------------------
+    customer_name_col = None
+    for c in df.columns:
+        if _norm(c) == "customername":
+            customer_name_col = c
+            break
+
+    if customer_name_col is not None:
+        # Split on '#' — take everything before it as the store/chain name
+        df["STORE_NAME"] = (
+            df[customer_name_col]
+            .astype(str)
+            .str.split("#", n=1)
+            .str[0]
+            .str.strip()
+        )
+        # Drop the original Customer Name column so it doesn't conflict
+        df = df.drop(columns=[customer_name_col])
 
     # Build mapping: current df col -> canonical
     col_map: dict[str, str] = {}
@@ -711,7 +725,6 @@ def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(columns=cols_to_drop)
         for c in cols_to_drop:
             col_map.pop(c, None)
-
 
     # Special: Buyer Count (dynamic date range in header)
     buyer_count_col = None

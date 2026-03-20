@@ -13,6 +13,7 @@ Key notes:
 - Deep-link protection: verify admin before rendering Admin page.
 - streamlit-authenticator 0.4.2: login() no longer returns a tuple;
   results are stored in st.session_state["name"], ["authentication_status"], ["username"].
+- credentials are cached in session_state to prevent repeated Snowflake hits on every rerun.
 """
 
 import streamlit as st
@@ -55,7 +56,9 @@ def _safe_import(module_path: str):
     return importlib.import_module(module_path)
 
 
-# ---------------- Page Config & Global Styles ----------------
+# ---------------- Page Config ----------------
+# IMPORTANT: set_page_config must be the FIRST Streamlit call.
+# Do NOT put any st.markdown() or other st calls before main() runs.
 st.set_page_config(
     page_title="Chainlink Analytics",
     page_icon="",
@@ -63,19 +66,32 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-def hide_sidebar():
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] {display: none !important;}
-        div[data-testid="stToolbar"] {display: none !important;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+# ---------------- Session State Init ----------------
+# Initialize early so guards work correctly on first load
+for key in ["authenticated", "tenant_id", "user_email", "conn", "is_admin"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
-st.markdown(
+COOKIE_KEY = st.secrets["cookie_key"]["cookie_secret_key"]
+
+# ---------------- Token / Password Reset Handling ----------------
+query_params = st.query_params
+if query_params.get("token"):
+    reset_password()
+    st.stop()
+
+if st.session_state.get("forgot_password_submitted"):
+    forgot_password()
+    st.stop()
+
+
+# ---------------- Global Styles (injected once after auth check) ----------------
+def _inject_global_styles():
     """
+    Inject global CSS only once per session after page config.
+    Calling this inside main() prevents style injection on login page rerenders.
+    """
+    st.markdown("""
     <style>
         .block-container {
             padding-top: 0rem;
@@ -84,14 +100,11 @@ st.markdown(
             padding-right: 5rem;
         }
         h1 { font-size: 1.75rem !important; }
-        #MainMenu, footer {visibility: hidden;}
+        #MainMenu, footer { visibility: hidden; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
-st.markdown(
-    """
+    st.markdown("""
     <style>
     :root {
         --primary-color: #6497D6;
@@ -112,31 +125,34 @@ st.markdown(
     }
     .stDownloadButton button:hover { background-color: #4c7dc0 !important; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
-# ---------------- Session State Init ----------------
-for key in ["authenticated", "tenant_id", "user_email", "conn", "is_admin"]:
-    if key not in st.session_state:
-        st.session_state[key] = None
 
-COOKIE_KEY = st.secrets["cookie_key"]["cookie_secret_key"]
+def hide_sidebar():
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] { display: none !important; }
+    div[data-testid="stToolbar"]      { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ---------------- Token / Password Reset Handling ----------------
-query_params = st.query_params
-if query_params.get("token"):
-    reset_password()
-    st.stop()
-
-if st.session_state.get("forgot_password_submitted"):
-    forgot_password()
-    st.stop()
 
 def clear_auth_cookie():
     """Remove auth cookie created by streamlit_authenticator."""
     cookie_manager = stx.CookieManager()
     cookie_manager.delete("chainlink_token")
+
+
+# ---------------- Credentials cache ----------------
+def _get_credentials() -> dict:
+    """
+    Fetch user credentials from Snowflake, cached in session_state.
+    Prevents repeated DB hits on every Streamlit rerun during login.
+    """
+    if "cached_credentials" not in st.session_state:
+        st.session_state["cached_credentials"] = fetch_user_credentials()
+    return st.session_state["cached_credentials"]
+
 
 # ---------------- Display Name Helpers ----------------
 def _fetch_user_full_name_db(email: str, tenant_id: str) -> str:
@@ -164,6 +180,7 @@ def _fetch_user_full_name_db(email: str, tenant_id: str) -> str:
     except Exception:
         return email
 
+
 def _get_user_full_name_cached(email: str, tenant_id: str) -> str:
     cache_key = "display_name"
     if st.session_state.get(cache_key):
@@ -171,6 +188,7 @@ def _get_user_full_name_cached(email: str, tenant_id: str) -> str:
     name = _fetch_user_full_name_db(email, tenant_id)
     st.session_state[cache_key] = name
     return name
+
 
 # ---------------- Login Status Probe ----------------
 def _probe_user_status(email: str) -> tuple[bool | None, bool | None, bool]:
@@ -196,6 +214,7 @@ def _probe_user_status(email: str) -> tuple[bool | None, bool | None, bool]:
     except Exception:
         return (None, None, False)
 
+
 # ---------------- Sidebar Header ----------------
 def render_sidebar_header(display_name, tenant_config, authenticator):
     with st.sidebar:
@@ -218,37 +237,90 @@ def render_sidebar_header(display_name, tenant_config, authenticator):
             unsafe_allow_html=True,
         )
 
+
 # ---------------- Admin Flag Helper ----------------
 def _refresh_admin_flag():
     email  = st.session_state.get("user_email")
     tenant = st.session_state.get("tenant_id")
-    st.session_state["is_admin"] = bool(email and tenant and is_admin_user(email, tenant))
+    st.session_state["is_admin"] = bool(
+        email and tenant and is_admin_user(email, tenant)
+    )
 
-# ---------------- Main ----------------
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 def main():
     """
     Auth → tenant context → nav → router.
     Admin-only: AI & Forecasts (with server-side guard).
     """
-    credentials = fetch_user_credentials()
+    # Inject global styles here (not at module level) to avoid
+    # style flicker/jumping on the login page
+    _inject_global_styles()
+
+    # Use cached credentials — prevents Snowflake hit on every rerun
+    credentials = _get_credentials()
 
     authenticator = stauth.Authenticate(
         credentials,
         "chainlink_token",
         COOKIE_KEY,
         cookie_expiry_days=0.014,
-        auto_hash=False,    # passwords are already bcrypt-hashed in Snowflake
+        auto_hash=False,
     )
 
-    # 0.4.2: login() renders the form but returns None.
-    # Results are stored in st.session_state automatically.
-    authenticator.login(location="main")
-
+    # 0.4.2: login() renders the form and stores results in session_state.
+    # Skip rendering the login form entirely if already authenticated —
+    # prevents the login form appearing alongside the dashboard after login.
     auth_status = st.session_state.get("authentication_status")
     username    = st.session_state.get("username")
     name        = st.session_state.get("name")
 
-    # ---------- SUCCESSFUL LOGIN ----------
+    if auth_status is not True:
+        # Not yet authenticated — render login form and STOP.
+        # The cookie manager (extra_streamlit_components) fires 1-2 reruns
+        # on page load while checking for an existing session cookie.
+        # We show a spinner during that check so the page doesn't appear
+        # to jump while the cookie check resolves.
+
+        # Check if this is a cookie-check rerun (no form interaction yet)
+        # by looking for the stx cookie manager rerun marker
+        is_cookie_checking = not st.session_state.get("_cookie_check_done")
+
+        if is_cookie_checking:
+            # Mark as done after first render so spinner only shows once
+            st.session_state["_cookie_check_done"] = True
+            with st.spinner("Loading Chainlink Analytics..."):
+                # Small pause to let cookie check complete before rendering form
+                import time
+                time.sleep(0.4)
+            st.rerun()
+
+        hide_sidebar()
+        authenticator.login(location="main")
+
+        # Re-read after form render
+        auth_status = st.session_state.get("authentication_status")
+        username    = st.session_state.get("username")
+        name        = st.session_state.get("name")
+
+        if auth_status is True:
+            # Login just succeeded — rerun for clean dashboard render
+            st.rerun()
+        elif auth_status is False:
+            # Wrong credentials — handled in failure branch below
+            pass
+        else:
+            # Waiting for input — stop here, render nothing else
+            st.warning("Please enter your username and password")
+            with st.expander("Forgot your password?"):
+                if st.button("Reset Password Link"):
+                    st.session_state["forgot_password_submitted"] = True
+                    st.rerun()
+            st.stop()
+
+    # ── SUCCESSFUL LOGIN ──────────────────────────────────────────────────────
     if auth_status is True:
         username_lc = (username or "").strip().lower()
         user_entry  = credentials.get("usernames", {}).get(username_lc)
@@ -256,7 +328,6 @@ def main():
             st.error("Login error: user or tenant data missing")
             return
 
-        # Hard checks: active + not locked
         if not is_user_active(username_lc, user_entry["tenant_id"]):
             st.error("Your account is disabled. Contact your administrator.")
             return
@@ -264,37 +335,41 @@ def main():
             st.error("Your account is locked. Please contact your administrator.")
             return
 
-        # Session context
-        st.session_state["authenticated"] = True
-        st.session_state["user_email"]    = username_lc
-        st.session_state["tenant_id"]     = user_entry["tenant_id"]
+        # Clear cookie check flag so spinner shows on next login
+        st.session_state["_cookie_check_done"] = False
 
-        # Tenant config
-        tenant_config = load_tenant_config(user_entry["tenant_id"])
-        if not isinstance(tenant_config, dict):
-            st.error("Tenant configuration failed to load or is not a dict.")
-            return
+        # Set session context (only if not already set — prevents rerun cascade)
+        if not st.session_state.get("authenticated"):
+            st.session_state["authenticated"] = True
+            st.session_state["user_email"]    = username_lc
+            st.session_state["tenant_id"]     = user_entry["tenant_id"]
 
-        st.session_state["tenant_config"] = tenant_config
-        st.session_state["toml_info"]     = tenant_config  # legacy compatibility
+            tenant_config = load_tenant_config(user_entry["tenant_id"])
+            if not isinstance(tenant_config, dict):
+                st.error("Tenant configuration failed to load or is not a dict.")
+                return
 
-        # Validate essentials
-        required_keys = ["snowflake_user", "account", "private_key", "warehouse", "database", "schema"]
-        missing = [k for k in required_keys if not tenant_config.get(k)]
-        if missing:
-            st.error(f"TOML configuration is incomplete. Missing: {', '.join(missing)}")
-            st.code({k: v for k, v in tenant_config.items() if "key" not in k.lower()}, language="json")
-            return
+            st.session_state["tenant_config"] = tenant_config
+            st.session_state["toml_info"]     = tenant_config
 
-        # Connect + reset failed attempts
-        st.session_state["conn"] = connect_to_tenant_snowflake(tenant_config)
-        reset_failed_attempts(username_lc)
+            required_keys = ["snowflake_user", "account", "private_key", "warehouse", "database", "schema"]
+            missing = [k for k in required_keys if not tenant_config.get(k)]
+            if missing:
+                st.error(f"TOML configuration is incomplete. Missing: {', '.join(missing)}")
+                return
 
-        # Admin flag + display name
-        _refresh_admin_flag()
-        display_name = _get_user_full_name_cached(username_lc, st.session_state["tenant_id"]) or name or username_lc
+            st.session_state["conn"] = connect_to_tenant_snowflake(tenant_config)
+            reset_failed_attempts(username_lc)
+            _refresh_admin_flag()
 
-        # Task indicator bar (above nav)
+        # Read from session (whether just set or already cached)
+        tenant_config = st.session_state.get("tenant_config", {})
+        display_name  = _get_user_full_name_cached(
+            st.session_state["user_email"],
+            st.session_state["tenant_id"]
+        ) or name or username_lc
+
+        # Task indicator (above nav) — guarded inside the function
         render_task_indicator(
             conn=st.session_state["conn"],
             tenant_id=st.session_state["tenant_id"],
@@ -309,7 +384,7 @@ def main():
             st.error("Navigation menu failed to render or returned no selection.")
             return
 
-        # ---------- Routing ----------
+        # ── Routing ──────────────────────────────────────────────────────────
         if selected_main == "Home":
             _safe_import("app_pages.home").render()
             return
@@ -317,10 +392,10 @@ def main():
         if selected_main == "Reports":
             report_page = render_reports_submenu()
             route = {
-                "Gap Report":        "app_pages.gap_report",
-                "Email Gap Report":  "app_pages.email_gap_report",
-                "Gap History":       "app_pages.gap_history",
-                "Data Exports":      "app_pages.data_exports",
+                "Gap Report":       "app_pages.gap_report",
+                "Email Gap Report": "app_pages.email_gap_report",
+                "Gap History":      "app_pages.gap_history",
+                "Data Exports":     "app_pages.data_exports",
             }.get(report_page)
             if not route:
                 st.warning("Invalid report selection.")
@@ -331,9 +406,9 @@ def main():
         if selected_main == "Format and Upload":
             selected_sub = render_format_upload_submenu()
             route = {
-                "Load Company Data":              "app_pages.load_company_data",
-                "Reset Schedule Processing":      "app_pages.reset_schedule",
-                "Distribution Grid Processing":   "app_pages.distro_grid",
+                "Load Company Data":            "app_pages.load_company_data",
+                "Reset Schedule Processing":    "app_pages.reset_schedule",
+                "Distribution Grid Processing": "app_pages.distro_grid",
             }.get(selected_sub)
             if not route:
                 st.warning("Invalid format/upload selection.")
@@ -347,10 +422,10 @@ def main():
                 st.rerun()
             selected_ai = render_ai_forecasts_submenu()
             ai_pages = {
-                "Predictive Purchases":  "app_pages.predictive_purchases",
-                "Predictive Truck Plan": "app_pages.predictive_truck_plan",
-                "AI-Narrative Report":   "app_pages.ai_narrative_report",
-                "Placement Intelligence":"app_pages.ai_placement_intelligence",
+                "Predictive Purchases":   "app_pages.predictive_purchases",
+                "Predictive Truck Plan":  "app_pages.predictive_truck_plan",
+                "AI-Narrative Report":    "app_pages.ai_narrative_report",
+                "Placement Intelligence": "app_pages.ai_placement_intelligence",
             }
             module_path = ai_pages.get(selected_ai)
             if not module_path:
@@ -377,7 +452,7 @@ def main():
 
         st.warning("Unknown menu selection.")
 
-    # ---------- FAILED LOGIN ----------
+    # ── FAILED LOGIN ──────────────────────────────────────────────────────────
     elif auth_status is False:
         email_lc = (username or "").strip().lower()
         if not email_lc:
@@ -396,14 +471,8 @@ def main():
         else:
             st.error("Username or password incorrect")
 
-    # ---------- NOT YET LOGGED IN ----------
-    else:
-        hide_sidebar()
-        st.warning("Please enter your username and password")
-        with st.expander("Forgot your password?"):
-            if st.button("Reset Password Link"):
-                st.session_state["forgot_password_submitted"] = True
-                st.rerun()
+    # ── NOT YET LOGGED IN ─────────────────────────────────────────────────────
+    # Handled above with st.stop() to prevent dashboard from rendering
 
 
 if __name__ == "__main__":
