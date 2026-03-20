@@ -1,5 +1,5 @@
 streamlit==1.32.0
-streamlit-authenticator==0.2.3
+streamlit-authenticator==0.4.2
 streamlit-option-menu
 snowflake-connector-python[pandas]==3.12.3
 cryptography==42.0.8
