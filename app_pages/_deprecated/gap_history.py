@@ -496,7 +496,7 @@ def render():
     )
 
     styled = _style_gap_table(display_df)
-    st.dataframe(styled, width="stretch")
+    st.dataframe(styled, width=True)
     st.write(f"Showing {len(display_df)} gap streak(s).")
 
     # ------------------------------------------------------------------

@@ -226,7 +226,7 @@ def render():
     )
 
     st.subheader("Summary by Salesperson")
-    st.dataframe(summary, width="stretch")
+    st.dataframe(summary, width=True)
 
     # ---- Detail Grid ----
     st.subheader("Detail (Store → UPC)")
@@ -260,7 +260,7 @@ def render():
         }
     )
 
-    st.dataframe(display_df, width="stretch")
+    st.dataframe(display_df, width=True)
 
     # ---- Exports ----
     csv_bytes = display_df.to_csv(index=False).encode("utf-8")

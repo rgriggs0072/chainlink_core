@@ -154,7 +154,7 @@ def render_sales_section():
 
     cleaned_df = result.cleaned_df
     st.success("✅ Validation passed. Preview of cleaned Sales data:")
-    st.dataframe(cleaned_df.head(25), width="stretch")
+    st.dataframe(cleaned_df.head(25), use_container_width=True)
 
     st.markdown("---")
 
@@ -421,9 +421,9 @@ def render_products_section():
                 bad_rows = cleaned_df.loc[bad_upc_mask].copy()
                 if not bad_rows.empty:
                     st.warning(f"Showing {min(len(bad_rows), 200)} row(s) with missing/invalid UPC (first 200):")
-                    st.dataframe(bad_rows.head(200), width="stretch")
+                    st.dataframe(bad_rows.head(200), width=True)
 
-            st.dataframe(cleaned_df.head(50), width="stretch")
+            st.dataframe(cleaned_df.head(50), width=True)
             st.markdown("---")
             return
 
@@ -435,7 +435,7 @@ def render_products_section():
 
         # 5) Preview of what will load
         st.success("Validation passed. Preview of cleaned Products data:")
-        st.dataframe(cleaned_df.head(50), width="stretch")
+        st.dataframe(cleaned_df.head(50), width=True)
 
         # 6) Upload button
         if st.button("Upload Products to Snowflake", key="upload_products_btn"):
