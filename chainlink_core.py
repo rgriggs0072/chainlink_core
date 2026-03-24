@@ -49,11 +49,23 @@ from nav.navigation_bar import (
 )
 from nav.task_indicator import render_task_indicator, render_task_sidebar_card
 
+from dotenv import load_dotenv
+import os
+
+# Load .env file
+load_dotenv(override=False)
+
+APP_ENV = os.getenv("APP_ENV", "local")
+
+with open("version.txt", "r") as f:
+    APP_VERSION = f.read().strip()
 
 def _safe_import(module_path: str):
     """Lazy-import a page module by dotted path."""
     import importlib
     return importlib.import_module(module_path)
+
+
 
 
 # ---------------- Page Config ----------------
@@ -218,19 +230,25 @@ def _probe_user_status(email: str) -> tuple[bool | None, bool | None, bool]:
 # ---------------- Sidebar Header ----------------
 def render_sidebar_header(display_name, tenant_config, authenticator):
     with st.sidebar:
+        
         logo_path = tenant_config.get("logo_path", "")
         image = add_logo(logo_path, width=160)
         if image:
             st.image(image, width=160)
         else:
             st.warning("Logo not available")
-
         st.success(f"Welcome, {display_name}!")
         handle_logout(authenticator)
         render_task_sidebar_card(
             conn=st.session_state.get("conn"),
             tenant_id=st.session_state.get("tenant_id"),
         )
+        st.markdown("---")
+        # Version and environment display
+        st.caption(f"⚙️ v{APP_VERSION}")
+        if APP_ENV != "production":
+            ENV_ICON = {"local": "🟡", "dev": "🔵"}
+            st.caption(f"{ENV_ICON.get(APP_ENV, '⚪')} {APP_ENV.upper()}")
         st.markdown("---")
         st.markdown(
             "<div style='font-size: 0.65rem; color: gray;'>© 2025 Chainlink Analytics LLC. All rights reserved.</div>",
