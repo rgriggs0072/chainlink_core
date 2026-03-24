@@ -1282,14 +1282,14 @@ def write_salesreport_to_snowflake(df: pd.DataFrame) -> None:
             """,
             [
                 (
-                    r.STORE_NUMBER,
-                    r.STORE_NAME,
-                    r.ADDRESS,
-                    r.SALESPERSON,
-                    r.PRODUCT_NAME,
-                    r.UPC,
-                    r.PURCHASED_YES_NO,
-                    r.CHAIN_NAME,
+                    int(r.STORE_NUMBER) if r.STORE_NUMBER is not None else None,
+                    str(r.STORE_NAME) if r.STORE_NAME is not None else None,
+                    str(r.ADDRESS) if r.ADDRESS is not None else None,
+                    str(r.SALESPERSON) if r.SALESPERSON is not None else None,
+                    str(r.PRODUCT_NAME) if r.PRODUCT_NAME is not None else None,
+                    str(r.UPC) if r.UPC is not None else None,
+                    int(r.PURCHASED_YES_NO) if r.PURCHASED_YES_NO is not None else None,
+                    str(r.CHAIN_NAME) if r.CHAIN_NAME is not None else None,
                 )
                 for r in df.itertuples(index=False)
             ],
