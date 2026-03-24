@@ -1,0 +1,1715 @@
+﻿# utils/load_company_data_helpers.py
+"""
+
+
+⚠️ IMPORTANT – DO NOT PARTIALLY EDIT THIS FILE
+
+This module is intentionally centralized and order-sensitive.
+If refactoring:
+- Keep ALL validators + writers together
+- Never remove a write_* function without updating load_company_sections.py
+- Always re-run:
+    python -c "from app_pages.load_company_sections import *"
+before committing
+
+Last verified: Supplier County + Products + Customers + Sales all green.
+
+
+Load Company Data Helpers (Chainlink Core)
+
+Overview for future devs:
+- Central home for all formatting + validation + upload helpers for:
+    * SALES_REPORT
+    * CUSTOMERS
+    * PRODUCTS
+    * SUPPLIER_COUNTY
+
+- This file contains:
+    1) Legacy Excel formatters (openpyxl) kept for rollback / “format then download”
+    2) Template-based DataFrame flows (recommended)
+    3) Snowflake upload writers (safe patterns)
+
+Snowflake write patterns:
+- CUSTOMERS: TEMP stage -> validate stage rowcount -> TRUNCATE + INSERT (transaction)
+- PRODUCTS:  TEMP stage -> validate stage rowcount -> TRUNCATE + INSERT (transaction)
+- SUPPLIER_COUNTY: TEMP stage -> SQL validation -> DELETE tenant slice -> INSERT (transaction)
+- SALES_REPORT: (currently) TRUNCATE + INSERT in transaction, with enrichment from CUSTOMERS
+
+Assumptions:
+- st.session_state["toml_info"] and st.session_state["tenant_id"] exist (login bootstrap)
+"""
+
+
+
+from __future__ import annotations
+
+from datetime import datetime, date
+from io import BytesIO
+from logging import warning
+import re
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import openpyxl
+from openpyxl import Workbook
+
+
+
+
+from sf_connector.service_connector import connect_to_tenant_snowflake
+from utils.class_validation_helpers import ColumnRule, ValidationResult, validate_dataframe
+
+
+def validate_sales_upload(df: pd.DataFrame) -> ValidationResult:
+    """Schema validation via validate_dataframe()."""
+    return validate_dataframe(df, SALES_SCHEMA)   
+
+# =============================================================================
+# ✅ COMMON CONSTANTS
+# =============================================================================
+
+NULL_LIKE = {"nan", "none", "null", "NaN", "None", "NULL", ""}
+
+
+# =============================================================================
+# ✅ COMMON CLEANING / NORMALIZATION HELPERS
+# =============================================================================
+
+def _is_null_like(x) -> bool:
+    """True if x is None/NaN or stringish null-like."""
+    if x is None:
+        return True
+    try:
+        if pd.isna(x):
+            return True
+    except Exception:
+        pass
+    s = str(x).strip()
+    return s.lower() in {"nan", "none", "null"} or s == ""
+
+
+def _clean_cell(x) -> str:
+    """
+    Clean a cell into a safe string (never returns None).
+    - None/NaN/null-like -> ""
+    - else -> stripped string
+    """
+    if _is_null_like(x):
+        return ""
+    s = str(x).strip()
+    return "" if s.lower() in {"nan", "none", "null"} else s
+
+
+def _clean_cell_or_none(x) -> str | None:
+    """
+    Clean a cell into a safe string or None.
+    - None/NaN/null-like -> None
+    - else -> stripped string
+    """
+    if _is_null_like(x):
+        return None
+    s = str(x).strip()
+    return None if s.lower() in {"nan", "none", "null"} or s == "" else s
+
+
+def _normalize_spaces_upper(s: str | None) -> str | None:
+    """Collapse whitespace and uppercase."""
+    if s is None:
+        return None
+    out = re.sub(r"\s+", " ", str(s).strip())
+    return out.upper() if out else None
+
+
+def _normalize_str_series(series: pd.Series) -> pd.Series:
+    """
+    Normalize a pandas Series:
+    - Keep None/NaN as None
+    - Strip whitespace
+    - Convert null-like strings to None
+    """
+    return series.map(_clean_cell_or_none)
+
+
+def _normalize_store_name(name: str | None) -> str | None:
+    """
+    Normalize store name:
+    - None/NaN -> None
+    - Remove anything after first '#' or '$'
+    - Collapse spaces
+    - Uppercase
+    """
+    if name is None or _is_null_like(name):
+        return None
+
+    s = str(name).strip()
+    if not s:
+        return None
+
+    s = re.split(r"[#$]", s, maxsplit=1)[0].strip()
+    s = " ".join(s.split())
+    return s.upper() if s else None
+
+
+def _clean_upc(value) -> str | None:
+    """
+    Normalize UPC-like values into digits-only string.
+
+    Rules:
+    - None/NaN -> None
+    - int -> str(int)
+    - float -> int(round(value)) -> str
+    - string -> digits-only
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, int):
+        s = str(value)
+    elif isinstance(value, float):
+        try:
+            s = str(int(round(value)))
+        except Exception:
+            s = str(value).strip()
+    else:
+        s = str(value).strip()
+
+    if not s or s.lower() in {"nan", "none", "null"}:
+        return None
+
+    digits_only = "".join(ch for ch in s if ch.isdigit())
+    return digits_only or None
+
+
+# =============================================================================
+# 🔐 SNOWFLAKE CONNECTION + TX HELPERS
+# =============================================================================
+
+def _get_conn_and_cursor():
+    """
+    Open tenant-scoped Snowflake connection.
+
+    Returns:
+        (conn, cursor, tenant_id)
+    """
+    toml_info = st.session_state.get("toml_info")
+    tenant_id = st.session_state.get("tenant_id")
+
+    if not toml_info or not tenant_id:
+        st.error("❌ Missing tenant configuration (toml_info / tenant_id).")
+        return None, None, None
+
+    conn = connect_to_tenant_snowflake(toml_info)
+    if not conn:
+        st.error("❌ Failed to connect to Snowflake.")
+        return None, None, None
+
+    return conn, conn.cursor(), tenant_id
+
+
+def _build_audit_fields() -> tuple[datetime, date]:
+    """Return (now_ts, today_date) as python types to pass into connector safely."""
+    return datetime.now(), date.today()
+
+
+def _finalize_transaction(cursor, conn, success_msg: str) -> None:
+    """Commit, close, success."""
+    conn.commit()
+    try:
+        cursor.close()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+    st.success(success_msg)
+
+
+def _rollback_transaction(conn, cursor) -> None:
+    """Rollback and close."""
+    try:
+        if conn:
+            conn.rollback()
+    except Exception:
+        pass
+    try:
+        if cursor:
+            cursor.close()
+    except Exception:
+        pass
+    try:
+        if conn:
+            conn.close()
+    except Exception:
+        pass
+
+
+# =============================================================================
+# 📤 DOWNLOAD HELPER (legacy formatters)
+# =============================================================================
+
+def download_workbook(workbook, filename: str) -> None:
+    """Stream an openpyxl workbook to user as .xlsx download."""
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    st.download_button(
+        label="Download formatted file",
+        data=stream.read(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# =============================================================================
+# 🔧 LEGACY FORMATTERS (Excel / openpyxl)
+# =============================================================================
+
+def remove_total_rows_worksheet(ws):
+    """
+    Remove worksheet rows where column A contains TOTAL (case-insensitive).
+    Operates in-place.
+    """
+    rows_to_delete = []
+    for row_idx in range(2, ws.max_row + 1):
+        val = ws.cell(row=row_idx, column=1).value
+        if val is None:
+            continue
+        text = str(val).strip().upper()
+        if text == "TOTAL" or text.startswith("TOTAL"):
+            rows_to_delete.append(row_idx)
+
+    for r in sorted(rows_to_delete, reverse=True):
+        ws.delete_rows(r, 1)
+
+
+ 
+
+
+def format_sales_report(workbook):
+    """
+    Legacy formatter for Encompass Sales Report export -> canonical SALES_REPORT layout.
+
+    Output columns:
+        STORE_NUMBER, STORE_NAME, ADDRESS, SALESPERSON, PRODUCT_NAME, UPC, PURCHASED_YES_NO
+    """
+   
+
+    try:
+        sheet_name = "SALES REPORT" if "SALES REPORT" in workbook.sheetnames else workbook.sheetnames[0]
+
+        # Drop other sheets
+        for name in list(workbook.sheetnames):
+            if name != sheet_name:
+                del workbook[name]
+
+        ws = workbook[sheet_name]
+        ws.title = "SALES REPORT"
+
+        # Rename headers
+        ws["A1"].value = "STORE_NUMBER"
+        ws["B1"].value = "STORE_NAME"
+        ws["C1"].value = "ADDRESS"
+        ws["D1"].value = "SALESPERSON"
+        ws["E1"].value = "PRODUCT_NAME"
+        ws["F1"].value = "UPC"
+        ws["G1"].value = "PURCHASED_YES_NO"
+
+        # Drop column H if present
+        if ws.max_column >= 8:
+            ws.delete_cols(8)
+
+        # UPC digits-only in col F
+        for cell in ws["F"][2:]:
+            cleaned = _clean_upc(cell.value)
+            cell.value = cleaned
+
+        # PURCHASED_YES_NO from Buyer Count in col G
+        for cell in ws["G"][2:]:
+            raw = cell.value
+            if raw is None or str(raw).strip() == "":
+                cell.value = 0
+                continue
+            try:
+                val = float(raw)
+                cell.value = 1 if val > 0 else 0
+            except Exception:
+                cell.value = 0
+
+        # Clean STORE_NAME
+        for cell in ws["B"][2:]:
+            if isinstance(cell.value, str):
+                raw = cell.value.strip()
+                if "#" in raw:
+                    raw = raw.split("#", 1)[0].strip()
+                cell.value = raw.replace(",", " ").replace(" 's", "").replace("'", "").strip()
+
+        # Clean other text cols
+        for col_letter in ["C", "D", "E"]:
+            for cell in ws[col_letter][2:]:
+                if isinstance(cell.value, str):
+                    cell.value = cell.value.replace(",", " ").replace(" 's", "").replace("'", "").strip()
+
+        # Final safety: remove TOTAL rows via DataFrame rebuild
+        data = list(ws.values)
+        if not data:
+            return workbook
+
+        header = data[0]
+        body = data[1:]
+        df = pd.DataFrame(body, columns=header)
+
+        if "STORE_NUMBER" in df.columns:
+            df = df[~df["STORE_NUMBER"].map(lambda x: str(x).strip().upper() == "TOTAL")].reset_index(drop=True)
+
+        ws.delete_rows(1, ws.max_row)
+        ws.append(list(df.columns))
+        for row in df.itertuples(index=False, name=None):
+            ws.append(list(row))
+
+        return workbook
+
+    except Exception as e:
+        st.error(f"Error formatting sales report: {e}")
+        return None
+
+
+def format_customers_report(workbook):
+    """
+    Legacy formatter for Customers sheet (rollback helper).
+    Keeps only sheet 'Customers' and reshapes to legacy layout.
+    """
+    try:
+        for sheet_name in list(workbook.sheetnames):
+            if sheet_name != "Customers":
+                workbook.remove(workbook[sheet_name])
+
+        ws = workbook["Customers"]
+        ws.auto_filter.ref = None
+        ws.insert_cols(3)
+
+        # Strip '#XXXX' from store-name col D
+        for row in ws.iter_rows(min_row=2, min_col=4, max_col=4):
+            for cell in row:
+                if cell.value and "#" in str(cell.value):
+                    ws.cell(row=cell.row, column=4).value = str(cell.value).split("#")[0].strip()
+
+        # Move store_number into col C from col E
+        for row in ws.iter_rows(min_row=2, min_col=5, max_col=5):
+            ws.cell(row=row[0].row, column=3).value = row[0].value
+
+        ws.delete_cols(5)
+
+        headers = [
+            "Customer_id",
+            "Chain_Name",
+            "Store_Number",
+            "Store_Name",
+            "Address",
+            "City",
+            "County",
+            "Salesperson",
+            "Account_Status",
+        ]
+        for col_idx, header in enumerate(headers, start=1):
+            ws.cell(row=1, column=col_idx, value=header)
+
+        # Clean quotes
+        for col in ["B", "E"]:
+            for cell in ws[col]:
+                if cell.value and isinstance(cell.value, str):
+                    cell.value = cell.value.replace("'", "")
+
+        # Validate store_number numeric
+        invalid = []
+        for cell in ws["C"][2:]:
+            if cell.value and not str(cell.value).isdigit():
+                invalid.append((cell.row, cell.value))
+
+        if invalid:
+            st.error("Non-numeric Store Numbers found:")
+            for row_num, val in invalid:
+                st.warning(f"Row {row_num}: '{val}'")
+            st.stop()
+
+        return workbook
+
+    except Exception as e:
+        st.error(f"Error formatting Customers sheet: {e}")
+        return None
+
+
+# =============================================================================
+# 🧪 CUSTOMERS TEMPLATE + VALIDATION (recommended)
+# =============================================================================
+
+CUSTOMERS_SCHEMA = [
+    ColumnRule("CUSTOMER_ID", required=True, dtype="int"),
+    ColumnRule("CHAIN_NAME", required=True, dtype="str"),
+    ColumnRule("STORE_NUMBER", required=True, dtype="int"),
+    ColumnRule("STORE_NAME", required=True, dtype="str"),
+    ColumnRule("ADDRESS", required=True, dtype="str"),
+    ColumnRule("CITY", required=True, dtype="str"),
+    ColumnRule("COUNTY", required=True, dtype="str"),
+    ColumnRule("SALESPERSON", required=True, dtype="str", allow_blank=False),
+    ColumnRule("ACCOUNT_STATUS", required=True, dtype="str"),
+]
+
+
+def generate_customers_template() -> pd.DataFrame:
+    """Empty Customers template dataframe (canonical headers)."""
+    return pd.DataFrame(columns=[r.name for r in CUSTOMERS_SCHEMA])
+
+
+def format_customers_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Light normalization for Customers template uploads.
+    - Header mapping: ignores spaces/underscores/case
+    - Normalizes text columns
+    - Cleans STORE_NAME (#/$ suffix removal)
+    """
+    df = raw_df.copy()
+
+    def _norm(h: str) -> str:
+        return str(h).strip().lower().replace(" ", "").replace("_", "")
+
+    norm_map = {_norm(c): c for c in df.columns}
+    target_cols = [r.name for r in CUSTOMERS_SCHEMA]
+
+    rename = {}
+    for t in target_cols:
+        if _norm(t) in norm_map:
+            rename[norm_map[_norm(t)]] = t
+
+    df = df.rename(columns=rename)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Normalize strings
+    for col in ["CHAIN_NAME", "STORE_NAME", "ADDRESS", "CITY", "COUNTY", "SALESPERSON", "ACCOUNT_STATUS"]:
+        if col in df.columns:
+            df[col] = _normalize_str_series(df[col])
+
+    if "STORE_NAME" in df.columns:
+        df["STORE_NAME"] = df["STORE_NAME"].apply(_normalize_store_name)
+
+    if "CHAIN_NAME" in df.columns:
+        df["CHAIN_NAME"] = df["CHAIN_NAME"].apply(_normalize_spaces_upper)
+
+    if "COUNTY" in df.columns:
+        df["COUNTY"] = df["COUNTY"].apply(_normalize_spaces_upper)
+
+    if "SALESPERSON" in df.columns:
+        df["SALESPERSON"] = df["SALESPERSON"].apply(_normalize_spaces_upper)
+
+    if "ACCOUNT_STATUS" in df.columns:
+        df["ACCOUNT_STATUS"] = df["ACCOUNT_STATUS"].apply(_normalize_spaces_upper)
+
+    return df
+
+
+def validate_customers_upload(df: pd.DataFrame) -> ValidationResult:
+    """Schema validation via validate_dataframe()."""
+    return validate_dataframe(df, CUSTOMERS_SCHEMA)
+
+
+def validate_customers_against_existing_chains(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """
+    Cross-check CHAIN_NAME values in upload against existing CUSTOMERS for this tenant.
+
+    Returns:
+        (errors, warnings)
+    """
+    conn, cursor, tenant_id = _get_conn_and_cursor()
+    if not conn or not cursor or not tenant_id:
+        return [], []
+
+    try:
+        cursor.execute(
+            """
+            SELECT DISTINCT CHAIN_NAME
+            FROM CUSTOMERS
+            WHERE TENANT_ID = %s
+              AND CHAIN_NAME IS NOT NULL;
+            """,
+            (tenant_id,),
+        )
+        rows = cursor.fetchall()
+    except Exception:
+        return [], []
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    known = [r[0] for r in rows if r and r[0]]
+    if not known:
+        return [], []
+
+    def norm_name(s: str) -> str:
+        return "".join(str(s).upper().split())
+
+    known_norm = {norm_name(x): x for x in known}
+
+    upload_vals = df.get("CHAIN_NAME", pd.Series([], dtype=object)).dropna().astype(str)
+    upload_unique = sorted(set(upload_vals.tolist()))
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for val in upload_unique:
+        n = norm_name(val)
+        if n not in known_norm:
+            errors.append(f"Chain '{val}' does not match any existing CHAIN_NAME for this tenant.")
+        else:
+            existing = known_norm[n]
+            if existing != val:
+                warnings.append(
+                    f"Chain '{val}' differs from existing '{existing}'. Consider standardizing to '{existing}'."
+                )
+
+    return errors, warnings
+
+
+# =============================================================================
+# 🧪 SALES REPORT TEMPLATE + VALIDATION (recommended)
+# =============================================================================
+
+def _validate_sales_upc(series: pd.Series) -> list[str]:
+    """
+    UPC validator (non-fatal / warning style).
+
+    Rules:
+    - If UPC is missing/empty/0/invalid length => warn (NOT error).
+    - We still normalize UPC values in format_sales_upload() to digits-only.
+    """
+    warnings: list[str] = []
+    for idx, raw in series.items():
+        row_num = idx + 2
+        cleaned = _clean_upc(raw)
+
+        # Treat blank/None/"0" as warning
+        if cleaned is None or cleaned == "0":
+            warnings.append(f"Row {row_num}: UPC is missing/0/invalid (value={repr(raw)}). It will be saved as NULL.")
+            continue
+
+        # Length check (warn only)
+        if len(cleaned) not in (10, 11, 12):
+            warnings.append(
+                f"Row {row_num}: UPC '{raw}' cleaned to '{cleaned}' has length {len(cleaned)}; expected 10/11/12. It will be saved as NULL."
+            )
+    return warnings
+
+
+
+def _validate_purchased_flag(series: pd.Series) -> list[str]:
+    """PURCHASED_YES_NO must be 0 or 1."""
+    errors: list[str] = []
+    for idx, raw in series.items():
+        row_num = idx + 2
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            errors.append(f"Row {row_num}: PURCHASED_YES_NO is blank; expected 0 or 1.")
+            continue
+        try:
+            val = int(raw)
+        except Exception:
+            errors.append(f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not an integer; expected 0 or 1.")
+            continue
+        if val not in (0, 1):
+            errors.append(f"Row {row_num}: PURCHASED_YES_NO '{raw}' is not valid; expected 0 or 1.")
+    return errors
+
+
+SALES_SCHEMA = [
+    ColumnRule("STORE_NUMBER", required=True, dtype="int"),
+    ColumnRule("STORE_NAME", required=True, dtype="str"),
+    ColumnRule("ADDRESS", required=True, dtype="str"),
+    ColumnRule("SALESPERSON", required=True, dtype="str"),
+    ColumnRule("PRODUCT_NAME", required=True, dtype="str"),
+    # UPC: allow blanks, warn only, store NULL
+    ColumnRule("UPC", required=True, dtype="str", allow_blank=True, warning_validators=[_validate_sales_upc]),
+    # PURCHASED_YES_NO: keep strict (must be 0/1)
+    ColumnRule("PURCHASED_YES_NO", required=True, dtype="int", allow_blank=False, validators=[_validate_purchased_flag]),
+]
+
+
+
+def generate_sales_template() -> pd.DataFrame:
+    """Empty Sales template dataframe (canonical headers)."""
+    return pd.DataFrame(columns=[r.name for r in SALES_SCHEMA])
+
+
+def format_sales_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize Sales uploads into canonical SALES_SCHEMA.
+
+    Supports:
+    - Chainlink template (already canonical)
+    - Delta Pacific current export (e.g., Chain Store Number, STORE NAME, Shipping Address, Salesman Assigned,
+      Product Name, Carrier UPC, Buyer Count ...)
+
+    Strategy:
+    - Map source columns -> canonical names using tolerant normalization + alias rules.
+    - Apply legacy cleaning rules (UPC digits-only, buyer-count -> 0/1, store name cleanup, text cleanup).
+    - Drop obvious TOTAL rows.
+    - Return DataFrame with canonical column names.
+    """
+    df = raw_df.copy()
+
+    def _norm(h: str) -> str:
+        return (
+            str(h)
+            .strip()
+            .lower()
+            .replace(" ", "")
+            .replace("_", "")
+            .replace("-", "")
+        )
+
+    # ------------------------------------------------------------------
+    # 1) Identify & map columns (template-safe + Delta export-safe)
+    # ------------------------------------------------------------------
+    alias_to_canonical = {
+        "storenumber":      "STORE_NUMBER",
+        "chainstorenumber": "STORE_NUMBER",
+        "storename":        "STORE_NAME",
+        "shippingaddress":  "ADDRESS",
+        "salesmanassigned": "SALESPERSON",
+        "productname":      "PRODUCT_NAME",
+        "carrierupc":       "UPC",
+        # explicitly ignore Buyer Count %
+        "buyercount%":      None,
+    }
+
+    # ------------------------------------------------------------------
+    # 1a) Encompass-specific: split "Customer Name" (e.g. "CVS # 9904")
+    #     into STORE_NAME (chain name before #) only.
+    #     STORE_NUMBER comes from "Chain Store Number" which is already
+    #     a clean integer — do NOT overwrite it with the # suffix.
+    # ------------------------------------------------------------------
+    customer_name_col = None
+    for c in df.columns:
+        if _norm(c) == "customername":
+            customer_name_col = c
+            break
+
+    if customer_name_col is not None:
+        # Split on '#' — take everything before it as the store/chain name
+        df["STORE_NAME"] = (
+            df[customer_name_col]
+            .astype(str)
+            .str.split("#", n=1)
+            .str[0]
+            .str.strip()
+        )
+        # Drop the original Customer Name column so it doesn't conflict
+        df = df.drop(columns=[customer_name_col])
+
+    # Build mapping: current df col -> canonical
+    col_map: dict[str, str] = {}
+
+    # Drop columns explicitly mapped to None (e.g., Buyer Count %)
+    cols_to_drop = [c for c, tgt in col_map.items() if tgt is None]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+        for c in cols_to_drop:
+            col_map.pop(c, None)
+
+    # Special: Buyer Count (dynamic date range in header)
+    buyer_count_col = None
+    for c in df.columns:
+        if _norm(c).startswith("buyercount"):
+            buyer_count_col = c
+            break
+    if buyer_count_col:
+        col_map[buyer_count_col] = "PURCHASED_YES_NO"
+
+    # Standard alias mapping
+    for c in df.columns:
+        n = _norm(c)
+        if n in alias_to_canonical:
+            col_map[c] = alias_to_canonical[n]
+
+    # Template-tolerant canonical detection (already canonical but different spacing/case)
+    target_cols = [r.name for r in SALES_SCHEMA]
+    for c in df.columns:
+        n = _norm(c)
+        for t in target_cols:
+            if n == _norm(t):
+                col_map[c] = t
+
+    # Apply rename
+    df = df.rename(columns=col_map)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    # Keep only expected columns if they exist (validator handles missing)
+    expected = [r.name for r in SALES_SCHEMA]
+    df = df[[c for c in expected if c in df.columns]]
+
+    # ------------------------------------------------------------------
+    # 2) Legacy-style cleaning / normalization
+    # ------------------------------------------------------------------
+
+    # STORE_NAME cleanup (strip #suffix, remove punctuation quirks)
+    if "STORE_NAME" in df.columns:
+        df["STORE_NAME"] = df["STORE_NAME"].map(_clean_cell_or_none)
+
+        def _legacy_clean_store_name(x):
+            x = _normalize_store_name(x)
+            if not x:
+                return x
+            # legacy extra cleanup
+            x = x.replace(",", " ").replace(" 's", "").replace("'", "").strip()
+            return x
+
+        df["STORE_NAME"] = df["STORE_NAME"].apply(_legacy_clean_store_name)
+
+    # Text cleanup for ADDRESS/SALESPERSON/PRODUCT_NAME
+    for col in ["ADDRESS", "SALESPERSON", "PRODUCT_NAME"]:
+        if col in df.columns:
+            df[col] = _normalize_str_series(df[col]).apply(_normalize_spaces_upper)
+            df[col] = df[col].apply(
+                lambda v: v.replace(",", " ").replace(" 's", "").replace("'", "").strip()
+                if isinstance(v, str)
+                else v
+            )
+
+    # UPC: digits-only, then null-out invalids (so no hard stop if allow_blank=True)
+    if "UPC" in df.columns:
+        df["UPC"] = df["UPC"].apply(_clean_upc)
+
+        def _null_bad_upc(u):
+            if u is None:
+                return None
+            u = str(u).strip()
+            if u == "" or u == "0":
+                return None
+            if len(u) not in (10, 11, 12):
+                return None
+            return u
+
+        df["UPC"] = df["UPC"].apply(_null_bad_upc)
+
+    # PURCHASED_YES_NO: template provides 0/1; Delta provides Buyer Count => convert to 0/1
+    if "PURCHASED_YES_NO" in df.columns:
+        s = pd.to_numeric(df["PURCHASED_YES_NO"], errors="coerce").fillna(0)
+        df["PURCHASED_YES_NO"] = (s > 0).astype(int)
+
+    # ------------------------------------------------------------------
+    # 3) Remove TOTAL rows (legacy behavior)
+    # ------------------------------------------------------------------
+    if "STORE_NUMBER" in df.columns:
+        df = df[~df["STORE_NUMBER"].astype(str).str.strip().str.upper().eq("TOTAL")].reset_index(drop=True)
+
+    return df
+
+
+
+
+# =============================================================================
+# ✅ PRODUCTS TEMPLATE + VALIDATION (recommended)
+# =============================================================================
+
+REQUIRED_PRODUCT_COLUMNS = [
+    "PRODUCT_ID",
+    "SUPPLIER",
+    "PRODUCT_NAME",
+    "PACKAGE",
+    "CARRIER_UPC",
+    "PRODUCT_MANAGER",
+]
+
+
+def create_products_template_workbook():
+    """Legacy helper to generate Products template as Excel workbook (optional)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Products"
+    ws.append(REQUIRED_PRODUCT_COLUMNS)
+    return wb
+
+
+def generate_products_template() -> pd.DataFrame:
+    """Empty Products template dataframe (canonical headers)."""
+    return pd.DataFrame(columns=REQUIRED_PRODUCT_COLUMNS)
+
+
+def format_products_upload(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize Products upload into REQUIRED_PRODUCT_COLUMNS.
+
+    Supports:
+    - Template headers
+    - Encompass export-ish headers (best effort mapping)
+    """
+    df = df_raw.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    def norm(c: str) -> str:
+        return str(c).strip().lower().replace(" ", "").replace("_", "")
+
+    nmap = {norm(c): c for c in df.columns}
+    rename = {}
+
+    # common export variants
+    if "productid" in nmap:
+        rename[nmap["productid"]] = "PRODUCT_ID"
+    if "productname" in nmap:
+        rename[nmap["productname"]] = "PRODUCT_NAME"
+    if "package" in nmap:
+        rename[nmap["package"]] = "PACKAGE"
+    if "carrierupc" in nmap:
+        rename[nmap["carrierupc"]] = "CARRIER_UPC"
+    if "supplier" in nmap:
+        rename[nmap["supplier"]] = "SUPPLIER"
+
+    df = df.rename(columns=rename)
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    if "PRODUCT_MANAGER" not in df.columns:
+        df["PRODUCT_MANAGER"] = None
+
+    for c in REQUIRED_PRODUCT_COLUMNS:
+        if c not in df.columns:
+            df[c] = None
+
+    return df[REQUIRED_PRODUCT_COLUMNS].copy()
+
+
+def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """
+    Validate Products upload.
+
+    Returns:
+        (cleaned_df, errors, warnings)
+
+    Rules:
+    - PRODUCT_ID required, digits-only, unique
+    - CARRIER_UPC cleaned; blank allowed (warning -> NULL)
+    - CARRIER_UPC length <= 20
+    - block placeholder '999999999999'
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=REQUIRED_PRODUCT_COLUMNS), ["Uploaded file is empty."], []
+
+    df = df_raw.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    missing = [c for c in REQUIRED_PRODUCT_COLUMNS if c not in df.columns]
+    if missing:
+        errors.append("Missing required columns: " + ", ".join(missing))
+        return df, errors, warnings
+
+    df = df[REQUIRED_PRODUCT_COLUMNS].copy()
+    df = df.dropna(how="all", subset=REQUIRED_PRODUCT_COLUMNS)
+
+    # Clean strings safely
+    for col in ["SUPPLIER", "PRODUCT_NAME", "PACKAGE", "CARRIER_UPC", "PRODUCT_MANAGER"]:
+        df[col] = df[col].map(_clean_cell)
+
+    # PRODUCT_ID checks
+    pid = df["PRODUCT_ID"].map(_clean_cell)
+    missing_id_mask = pid.eq("")
+    if missing_id_mask.any():
+        rows = [i + 2 for i in df.index[missing_id_mask]]
+        errors.append("PRODUCT_ID is required for row(s): " + ", ".join(map(str, rows)))
+
+    bad_digit_mask = ~pid.str.match(r"^\d+$") & ~missing_id_mask
+    if bad_digit_mask.any():
+        rows = [i + 2 for i in df.index[bad_digit_mask]]
+        errors.append("PRODUCT_ID must be digits only for row(s): " + ", ".join(map(str, rows)))
+
+    valid_pid = pid.where(~(missing_id_mask | bad_digit_mask), None)
+    dup_mask = valid_pid.notna() & valid_pid.duplicated(keep=False)
+    if dup_mask.any():
+        dup_ids = sorted(set(valid_pid[dup_mask].tolist()))
+        errors.append("Duplicate PRODUCT_ID values found: " + ", ".join(map(str, dup_ids)))
+
+    df["PRODUCT_ID"] = pd.to_numeric(valid_pid, errors="coerce")
+
+    # UPC cleaning + validation
+    df["CARRIER_UPC"] = df["CARRIER_UPC"].apply(_clean_upc)
+
+    placeholder_mask = df["CARRIER_UPC"].eq("999999999999")
+    if placeholder_mask.any():
+        rows = [i + 2 for i in df.index[placeholder_mask]]
+        errors.append("Invalid placeholder CARRIER_UPC '999999999999' on row(s): " + ", ".join(map(str, rows)))
+
+    len_mask = df["CARRIER_UPC"].notna() & (df["CARRIER_UPC"].str.len() > 20)
+    if len_mask.any():
+        rows = [i + 2 for i in df.index[len_mask]]
+        errors.append("CARRIER_UPC must be <= 20 digits for row(s): " + ", ".join(map(str, rows)))
+
+    missing_upc_mask = df["CARRIER_UPC"].isna() | df["CARRIER_UPC"].eq("")
+    if missing_upc_mask.any():
+        rows = [i + 2 for i in df.index[missing_upc_mask]]
+        warnings.append(
+            "CARRIER_UPC blank/non-numeric for row(s): "
+            + ", ".join(map(str, rows))
+            + " -> will load as NULL."
+        )
+        df.loc[missing_upc_mask, "CARRIER_UPC"] = None
+
+    # Normalize key text fields
+    df["SUPPLIER"] = df["SUPPLIER"].apply(lambda x: _normalize_spaces_upper(x) if x else None)
+    df["PRODUCT_NAME"] = df["PRODUCT_NAME"].apply(lambda x: _normalize_spaces_upper(x) if x else None)
+    df["PACKAGE"] = df["PACKAGE"].apply(lambda x: _normalize_spaces_upper(x) if x else None)
+    df["PRODUCT_MANAGER"] = df["PRODUCT_MANAGER"].apply(lambda x: x.strip() if isinstance(x, str) and x.strip() else None)
+
+    return df, errors, warnings
+
+
+# =============================================================================
+# 📌 SUPPLIER BY COUNTY – TEMPLATES (Canonical + Pivot)
+# =============================================================================
+
+
+SUPPLIER_COUNTY_REQUIRED_COLUMNS = ["SUPPLIER", "COUNTY", "STATUS"]
+
+
+def generate_supplier_county_template() -> pd.DataFrame:
+    """
+    Canonical (standard) Supplier County template.
+
+    Output columns:
+      SUPPLIER, COUNTY, STATUS
+
+    Notes:
+    - Tenant/audit fields are added server-side during upload.
+    - This template supports users who already have standard rows (not pivot).
+    """
+    return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
+
+
+def create_supplier_county_pivot_template_workbook(
+    counties: list[str] | None = None,
+) -> Workbook:
+    """
+    Build an in-memory XLSX pivot-style template that matches the raw export shape.
+
+    Pivot layout expected by format_supplier_by_county():
+      - Column A header: 'Supplier / County'
+      - Remaining columns: county names
+      - Cells: 1 = Yes, blank = No
+
+    counties:
+      - If provided, uses exactly those columns.
+      - If None, uses a small sensible default set (users can add/remove counties).
+
+    Returns:
+      openpyxl.Workbook
+    """
+    # Keep this lightweight; users can expand as needed.
+    default_counties = [
+        "ALAMEDA",
+        "CONTRA COSTA",
+        "FRESNO",
+        "MONTEREY",
+        "SAN JOAQUIN",
+        "SAN MATEO",
+        "SANTA CLARA",
+        "STANISLAUS",
+        "TULARE",
+    ]
+    cols = counties if counties else default_counties
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Supplier County Pivot"
+
+    # Header row (IMPORTANT: must match your pivot detection expectations)
+    ws.append(["Supplier / County", *cols])
+
+    # Example rows (users overwrite)
+    ws.append(["EXAMPLE SUPPLIER A", 1, "", 1, "", "", 1, "", "", ""])
+    ws.append(["EXAMPLE SUPPLIER B", "", 1, "", 1, "", "", 1, "", ""])
+
+    # Optional note row
+    ws.append([])
+    ws.append(["NOTE: Use 1 for Yes; leave blank for No."])
+
+    return wb
+
+
+def workbook_to_xlsx_bytes(wb: Workbook) -> bytes:
+    """
+    Convert an openpyxl Workbook to raw XLSX bytes for Streamlit downloads.
+    """
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+
+def validate_supplier_county_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Validate canonical Supplier County format: SUPPLIER, COUNTY, STATUS.
+
+    Rules:
+    - SUPPLIER required, non-blank
+    - COUNTY required, non-blank
+    - STATUS in Yes/No (case-insensitive)
+    - Grain: one row per (SUPPLIER, COUNTY) (duplicates are error)
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS), ["Uploaded file is empty."]
+
+    errors: list[str] = []
+
+    df = df_raw.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    missing = [c for c in SUPPLIER_COUNTY_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        errors.append("Missing required columns: " + ", ".join(missing))
+        return df, errors
+
+    df = df[SUPPLIER_COUNTY_REQUIRED_COLUMNS].copy()
+    df = df.dropna(how="all", subset=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
+
+    for col in SUPPLIER_COUNTY_REQUIRED_COLUMNS:
+        df[col] = df[col].map(_clean_cell)
+
+    df["SUPPLIER"] = df["SUPPLIER"].apply(_normalize_spaces_upper)
+    df["COUNTY"] = df["COUNTY"].apply(_normalize_spaces_upper)
+    df["STATUS"] = df["STATUS"].str.strip().str.title()
+
+    missing_supplier = df["SUPPLIER"].isna() | df["SUPPLIER"].eq("")
+    if missing_supplier.any():
+        rows = [i + 2 for i in df.index[missing_supplier]]
+        errors.append("SUPPLIER is required for row(s): " + ", ".join(map(str, rows)))
+
+    missing_county = df["COUNTY"].isna() | df["COUNTY"].eq("")
+    if missing_county.any():
+        rows = [i + 2 for i in df.index[missing_county]]
+        errors.append("COUNTY is required for row(s): " + ", ".join(map(str, rows)))
+
+    allowed = {"Yes", "No"}
+    bad_status = ~df["STATUS"].isin(allowed)
+    if bad_status.any():
+        rows = [i + 2 for i in df.index[bad_status]]
+        bad_vals = df.loc[bad_status, "STATUS"].unique().tolist()
+        errors.append(f"Invalid STATUS values {bad_vals}. Only Yes/No allowed. Rows: " + ", ".join(map(str, rows)))
+
+    dup_mask = df.duplicated(subset=["SUPPLIER", "COUNTY"], keep=False)
+    if dup_mask.any():
+        sample = df.loc[dup_mask, ["SUPPLIER", "COUNTY"]].head(10).to_dict("records")
+        errors.append(f"Duplicate (SUPPLIER, COUNTY) rows detected. Sample: {sample}")
+
+    return df, errors
+
+
+def format_supplier_by_county(uploaded_file) -> pd.DataFrame:
+    """
+    Convert Supplier-by-County pivot export into canonical 3-column format,
+    including "No" rows (full supplier x county matrix).
+
+    Pivot layout:
+      - First col: supplier name (header often "Supplier / County")
+      - Remaining cols: county names
+      - Cell: typically 1 for present, blank for not present
+
+    Output:
+      SUPPLIER, COUNTY, STATUS (Yes/No)
+      One row per (SUPPLIER, COUNTY)
+    """
+    df = pd.read_excel(uploaded_file, engine="openpyxl")
+    if df.empty:
+        return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
+
+    df.columns = [str(c).strip() for c in df.columns]
+    first_col = df.columns[0]
+    df = df.rename(columns={first_col: "SUPPLIER"})
+
+    # Drop blank supplier rows
+    df["SUPPLIER"] = df["SUPPLIER"].map(_clean_cell)
+    df = df[df["SUPPLIER"].notna() & (df["SUPPLIER"].str.strip() != "")].copy()
+
+    county_cols = [c for c in df.columns if c != "SUPPLIER"]
+
+    long_df = df.melt(
+        id_vars=["SUPPLIER"],
+        value_vars=county_cols,
+        var_name="COUNTY",
+        value_name="VALUE",
+    )
+
+    long_df["SUPPLIER"] = long_df["SUPPLIER"].map(_clean_cell).apply(_normalize_spaces_upper)
+    long_df["COUNTY"] = long_df["COUNTY"].map(_clean_cell).apply(_normalize_spaces_upper)
+
+    v = long_df["VALUE"]
+
+    present = (
+        v.notna()
+        & (v.map(_clean_cell).str.strip() != "")
+        & (v.map(_clean_cell).str.strip() != "0")
+        & (v.map(_clean_cell).str.strip().str.upper() != "FALSE")
+    )
+
+    long_df["STATUS"] = present.map({True: "Yes", False: "No"})
+
+    out = long_df[["SUPPLIER", "COUNTY", "STATUS"]].drop_duplicates(
+        subset=["SUPPLIER", "COUNTY"],
+        keep="first",
+    ).reset_index(drop=True)
+
+    return out
+
+
+# =============================================================================
+# 📥 SALES_REPORT UPLOAD
+# =============================================================================
+
+def _fetch_customer_chain_lookup(conn, tenant_id: str) -> dict[int, str]:
+    """
+    Pull (STORE_NUMBER -> CHAIN_NAME) lookup from CUSTOMERS for this tenant.
+    """
+    lookup: dict[int, str] = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT STORE_NUMBER, CHAIN_NAME
+                FROM CUSTOMERS
+                WHERE TENANT_ID = %s
+                  AND STORE_NUMBER IS NOT NULL
+                  AND CHAIN_NAME IS NOT NULL;
+                """,
+                (tenant_id,),
+            )
+            rows = cur.fetchall()
+
+        for store_number, chain_name in rows:
+            try:
+                lookup[int(store_number)] = str(chain_name)
+            except Exception:
+                continue
+
+    except Exception as e:
+        st.warning(f"⚠️ Could not enrich CHAIN_NAME from CUSTOMERS: {e}")
+
+    return lookup
+
+
+def write_salesreport_to_snowflake(df: pd.DataFrame) -> None:
+    """
+    Upload validated Sales Report safely using TEMP stage pattern.
+
+    Overview for future devs:
+    - This function assumes df already passed template validation (SALES_SCHEMA)
+      and customer cross-check validation.
+    - Safety pattern (same as Customers):
+        1) Enrich df with CHAIN_NAME from CUSTOMERS (tenant-scoped lookup)
+        2) CREATE TEMP stage table
+        3) INSERT into stage
+        4) Validate stage rowcount == len(df)
+        5) Transaction:
+            - DELETE live SALES_REPORT rows for this tenant only
+            - INSERT from stage into SALES_REPORT with audit fields
+    - If anything fails before the transaction, live data remains untouched.
+    """
+    if df is None or df.empty:
+        st.error("❌ Nothing to upload: Sales dataframe is empty.")
+        return
+
+    df = df.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    # Defensive cleaning
+    if "UPC" in df.columns:
+        df["UPC"] = df["UPC"].apply(_clean_upc)
+    if "STORE_NAME" in df.columns:
+        df["STORE_NAME"] = df["STORE_NAME"].apply(_normalize_store_name)
+    if "PURCHASED_YES_NO" in df.columns:
+        df["PURCHASED_YES_NO"] = (
+            pd.to_numeric(df["PURCHASED_YES_NO"], errors="coerce")
+            .fillna(0)
+            .round(0)
+            .astype(int)
+        )
+
+    conn, cursor, tenant_id = _get_conn_and_cursor()
+    if not conn or not cursor or not tenant_id:
+        return
+
+    now_ts, today_date = _build_audit_fields()
+
+    # Enrich CHAIN_NAME from CUSTOMERS (tenant-scoped)
+    chain_lookup = _fetch_customer_chain_lookup(conn, tenant_id)
+    df["CHAIN_NAME"] = df["STORE_NUMBER"].apply(
+        lambda sn: chain_lookup.get(int(sn)) if not _is_null_like(sn) else None
+    )
+
+    try:
+        # 1) TEMP stage
+        cursor.execute(
+            """
+            CREATE TEMP TABLE SALES_REPORT_STAGE (
+                STORE_NUMBER NUMBER(38,0),
+                STORE_NAME VARCHAR,
+                ADDRESS VARCHAR,
+                SALESPERSON VARCHAR,
+                PRODUCT_NAME VARCHAR,
+                UPC VARCHAR,
+                PURCHASED_YES_NO NUMBER(38,0),
+                CHAIN_NAME VARCHAR
+            );
+            """
+        )
+
+        # 2) Insert stage
+        cursor.executemany(
+            """
+            INSERT INTO SALES_REPORT_STAGE (
+                STORE_NUMBER, STORE_NAME, ADDRESS, SALESPERSON,
+                PRODUCT_NAME, UPC, PURCHASED_YES_NO, CHAIN_NAME
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s);
+            """,
+            [
+                (
+                    r.STORE_NUMBER,
+                    r.STORE_NAME,
+                    r.ADDRESS,
+                    r.SALESPERSON,
+                    r.PRODUCT_NAME,
+                    r.UPC,
+                    r.PURCHASED_YES_NO,
+                    r.CHAIN_NAME,
+                )
+                for r in df.itertuples(index=False)
+            ],
+        )
+
+        # 3) Validate stage count
+        cursor.execute("SELECT COUNT(*) FROM SALES_REPORT_STAGE;")
+        staged_count = int(cursor.fetchone()[0])
+        expected = int(len(df))
+        if staged_count != expected:
+            raise RuntimeError(f"Stage rowcount mismatch: staged={staged_count}, expected={expected}")
+
+        # 4) Tenant-safe swap (NO TRUNCATE)
+        cursor.execute("BEGIN;")
+
+        cursor.execute(
+            """
+            DELETE FROM SALES_REPORT
+            WHERE TENANT_ID = %s;
+            """,
+            (tenant_id,),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO SALES_REPORT (
+                STORE_NUMBER, STORE_NAME, ADDRESS, SALESPERSON, PRODUCT_NAME,
+                UPC, PURCHASED_YES_NO,
+                TENANT_ID, CREATED_AT, SALE_DATE, CHAIN_NAME, LAST_LOAD_DATE
+            )
+            SELECT
+                STORE_NUMBER, STORE_NAME, ADDRESS, SALESPERSON, PRODUCT_NAME,
+                UPC, PURCHASED_YES_NO,
+                %s, %s, NULL, CHAIN_NAME, %s
+            FROM SALES_REPORT_STAGE;
+            """,
+            (tenant_id, now_ts, today_date),
+        )
+
+        # Commit but do NOT close the connection yet (see note below)
+        try:
+            conn.commit()
+        except Exception:
+            pass
+
+        # Run the refresh while the connection is still alive
+        _run_gap_report_refresh(conn)
+
+        # Now do your normal finalize/close messaging
+        _finalize_transaction(cursor, conn, "✅ Sales report uploaded (staged and replaced successfully).")
+
+
+
+    except Exception as e:
+        _rollback_transaction(conn, cursor)
+        st.error(f"❌ Sales report upload failed (target protected): {e}")
+
+
+def _run_gap_report_refresh(conn) -> None:
+    """
+    Trigger GAP metrics rebuild after data uploads that affect GAP_REPORT.
+
+    Notes:
+    - Runs after SALES_REPORT upload commits successfully.
+    - Does NOT raise to caller (we don't want to undo a successful upload).
+    """
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("CALL PROCESS_GAP_REPORT()")
+        finally:
+            cur.close()
+    except Exception as e:
+        # Don't fail the upload; just warn
+        st.warning(f"Sales uploaded, but GAP metrics refresh failed: {e}")
+
+
+# =============================================================================
+# 📥 CUSTOMERS UPLOAD (TEMP stage safe)
+# =============================================================================
+
+def write_customers_to_snowflake(df: pd.DataFrame) -> None:
+    """
+    Upload validated Customers data safely using TEMP stage pattern.
+
+    Safety:
+    - TEMP stage table
+    - insert stage
+    - validate stage rowcount
+    - transaction: TRUNCATE CUSTOMERS then INSERT from stage with audit fields
+    """
+    if df is None or df.empty:
+        st.error("❌ Nothing to upload: Customers dataframe is empty.")
+        return
+
+    df = df.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    conn, cursor, tenant_id = _get_conn_and_cursor()
+    if not conn or not cursor or not tenant_id:
+        return
+
+    now_ts, today_date = _build_audit_fields()
+
+    try:
+        cursor.execute(
+            """
+            CREATE TEMP TABLE CUSTOMERS_STAGE (
+                CUSTOMER_ID NUMBER(38,0),
+                CHAIN_NAME VARCHAR,
+                STORE_NUMBER NUMBER(38,0),
+                STORE_NAME VARCHAR,
+                ADDRESS VARCHAR,
+                CITY VARCHAR,
+                COUNTY VARCHAR,
+                SALESPERSON VARCHAR,
+                ACCOUNT_STATUS VARCHAR
+            );
+            """
+        )
+
+        cursor.executemany(
+            """
+            INSERT INTO CUSTOMERS_STAGE (
+                CUSTOMER_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME,
+                ADDRESS, CITY, COUNTY, SALESPERSON, ACCOUNT_STATUS
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s);
+            """,
+            [
+                (
+                    r.CUSTOMER_ID,
+                    r.CHAIN_NAME,
+                    r.STORE_NUMBER,
+                    r.STORE_NAME,
+                    r.ADDRESS,
+                    r.CITY,
+                    r.COUNTY,
+                    r.SALESPERSON,
+                    r.ACCOUNT_STATUS,
+                )
+                for r in df.itertuples(index=False)
+            ],
+        )
+
+        cursor.execute("SELECT COUNT(*) FROM CUSTOMERS_STAGE;")
+        staged_count = int(cursor.fetchone()[0])
+        expected = int(len(df))
+        if staged_count != expected:
+            raise RuntimeError(f"Stage rowcount mismatch: staged={staged_count}, expected={expected}")
+
+        cursor.execute("BEGIN;")
+        cursor.execute("TRUNCATE TABLE CUSTOMERS;")
+
+        cursor.execute(
+            """
+            INSERT INTO CUSTOMERS (
+                CUSTOMER_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME,
+                ADDRESS, CITY, COUNTY, SALESPERSON, ACCOUNT_STATUS,
+                TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            )
+            SELECT
+                CUSTOMER_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME,
+                ADDRESS, CITY, COUNTY, SALESPERSON, ACCOUNT_STATUS,
+                %s, %s, %s, %s
+            FROM CUSTOMERS_STAGE;
+            """,
+            (tenant_id, now_ts, now_ts, today_date),
+        )
+
+        _finalize_transaction(cursor, conn, "✅ Customers uploaded (TEMP stage, safe truncate/insert).")
+
+    except Exception as e:
+        _rollback_transaction(conn, cursor)
+        st.error(f"❌ Customer upload failed (target protected): {e}")
+
+
+# =============================================================================
+# 📥 PRODUCTS UPLOAD (TEMP stage safe)
+# =============================================================================
+
+def write_products_to_snowflake(df: pd.DataFrame) -> None:
+    """
+    Upload cleaned Products data safely using TEMP stage pattern.
+
+    Safety:
+    - TEMP stage table
+    - insert stage
+    - validate stage rowcount
+    - transaction: TRUNCATE PRODUCTS then INSERT from stage with audit fields
+    """
+    if df is None or df.empty:
+        st.error("❌ Nothing to upload: Products dataframe is empty.")
+        return
+
+    df = df.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.where(pd.notna(df), None)
+
+    conn, cursor, tenant_id = _get_conn_and_cursor()
+    if not conn or not cursor or not tenant_id:
+        return
+
+    try:
+        cursor.execute(
+            """
+            CREATE TEMP TABLE PRODUCTS_STAGE (
+                PRODUCT_ID NUMBER(38,0),
+                SUPPLIER VARCHAR,
+                PRODUCT_NAME VARCHAR,
+                PACKAGE VARCHAR,
+                CARRIER_UPC VARCHAR(20),
+                PRODUCT_MANAGER VARCHAR
+            );
+            """
+        )
+
+        cursor.executemany(
+            """
+            INSERT INTO PRODUCTS_STAGE (
+                PRODUCT_ID, SUPPLIER, PRODUCT_NAME, PACKAGE, CARRIER_UPC, PRODUCT_MANAGER
+            )
+            VALUES (%s,%s,%s,%s,%s,%s);
+            """,
+            [
+                (
+                    r.PRODUCT_ID,
+                    r.SUPPLIER,
+                    r.PRODUCT_NAME,
+                    r.PACKAGE,
+                    r.CARRIER_UPC,
+                    r.PRODUCT_MANAGER,
+                )
+                for r in df.itertuples(index=False)
+            ],
+        )
+
+        cursor.execute("SELECT COUNT(*) FROM PRODUCTS_STAGE;")
+        staged_count = int(cursor.fetchone()[0])
+        expected = int(len(df))
+        if staged_count != expected:
+            raise RuntimeError(f"Stage rowcount mismatch: staged={staged_count}, expected={expected}")
+
+        cursor.execute("BEGIN;")
+        cursor.execute("TRUNCATE TABLE PRODUCTS;")
+
+        cursor.execute(
+            """
+            INSERT INTO PRODUCTS (
+                PRODUCT_ID, SUPPLIER, PRODUCT_NAME, PACKAGE, CARRIER_UPC, PRODUCT_MANAGER,
+                TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            )
+            SELECT
+                PRODUCT_ID, SUPPLIER, PRODUCT_NAME, PACKAGE, CARRIER_UPC, PRODUCT_MANAGER,
+                %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), CURRENT_DATE()
+            FROM PRODUCTS_STAGE;
+            """,
+            (tenant_id,),
+        )
+
+        _finalize_transaction(cursor, conn, "✅ Products uploaded (TEMP stage, safe truncate/insert).")
+
+    except Exception as e:
+        _rollback_transaction(conn, cursor)
+        st.error(f"❌ Product upload failed (target protected): {e}")
+
+
+# =============================================================================
+# 📥 SUPPLIER_COUNTY UPLOAD (TEMP stage + SQL validation + tenant-slice replace)
+# =============================================================================
+
+def write_supplier_by_county_to_snowflake(df: pd.DataFrame) -> None:
+    """
+    Upload SUPPLIER_COUNTY safely:
+    - TEMP stage LIKE SUPPLIER_COUNTY
+    - insert stage with audit fields
+    - SQL validate: STATUS, blanks, uniqueness
+    - DELETE tenant slice from SUPPLIER_COUNTY
+    - INSERT stage rows into SUPPLIER_COUNTY
+    """
+    if df is None or df.empty:
+        st.error("❌ Nothing to upload: Supplier County dataframe is empty.")
+        return
+
+    df = df.copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    required = ["SUPPLIER", "COUNTY", "STATUS"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        st.error(f"❌ Upload failed: missing required columns: {', '.join(missing)}")
+        return
+
+    df = df[required].copy()
+    df["SUPPLIER"] = df["SUPPLIER"].map(_clean_cell).apply(_normalize_spaces_upper)
+    df["COUNTY"] = df["COUNTY"].map(_clean_cell).apply(_normalize_spaces_upper)
+    df["STATUS"] = df["STATUS"].map(_clean_cell).str.title()
+
+    toml_info = st.session_state.get("toml_info")
+    tenant_id = st.session_state.get("tenant_id")
+    if not toml_info or not tenant_id:
+        st.error("❌ Tenant configuration is missing.")
+        return
+
+    now_ts, today_date = _build_audit_fields()
+
+    conn = None
+    cur = None
+
+    try:
+        conn = connect_to_tenant_snowflake(toml_info)
+        if not conn:
+            st.error("❌ Failed to connect to Snowflake.")
+            return
+
+        cur = conn.cursor()
+        cur.execute("BEGIN;")
+
+        cur.execute("CREATE OR REPLACE TEMP TABLE SUPPLIER_COUNTY_STAGE LIKE SUPPLIER_COUNTY;")
+
+        records = [
+            (supplier, county, status, tenant_id, now_ts, now_ts, today_date)
+            for supplier, county, status in df.itertuples(index=False, name=None)
+        ]
+
+        cur.executemany(
+            """
+            INSERT INTO SUPPLIER_COUNTY_STAGE (
+                SUPPLIER, COUNTY, STATUS, TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s);
+            """,
+            records,
+        )
+
+        # SQL validation: status
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM SUPPLIER_COUNTY_STAGE
+            WHERE TENANT_ID = %s
+              AND STATUS NOT IN ('Yes', 'No');
+            """,
+            (tenant_id,),
+        )
+        bad_status = int(cur.fetchone()[0])
+        if bad_status > 0:
+            cur.execute("ROLLBACK;")
+            st.error(f"❌ Upload blocked: {bad_status} staged row(s) have invalid STATUS (must be Yes/No).")
+            return
+
+        # SQL validation: blanks
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM SUPPLIER_COUNTY_STAGE
+            WHERE TENANT_ID = %s
+              AND (SUPPLIER IS NULL OR TRIM(SUPPLIER) = ''
+                   OR COUNTY   IS NULL OR TRIM(COUNTY)   = '');
+            """,
+            (tenant_id,),
+        )
+        blanks = int(cur.fetchone()[0])
+        if blanks > 0:
+            cur.execute("ROLLBACK;")
+            st.error(f"❌ Upload blocked: {blanks} staged row(s) have blank SUPPLIER or COUNTY.")
+            return
+
+        # SQL validation: uniqueness
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) AS total_rows,
+              COUNT(DISTINCT CONCAT(SUPPLIER, '||', COUNTY)) AS distinct_keys
+            FROM SUPPLIER_COUNTY_STAGE
+            WHERE TENANT_ID = %s;
+            """,
+            (tenant_id,),
+        )
+        total_rows, distinct_keys = cur.fetchone()
+        if int(total_rows) != int(distinct_keys):
+            cur.execute("ROLLBACK;")
+            st.error("❌ Upload blocked: duplicate (SUPPLIER, COUNTY) keys detected in staging.")
+            return
+
+        # Replace tenant slice
+        cur.execute("DELETE FROM SUPPLIER_COUNTY WHERE TENANT_ID = %s;", (tenant_id,))
+
+        cur.execute(
+            """
+            INSERT INTO SUPPLIER_COUNTY (
+                SUPPLIER, COUNTY, STATUS, TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            )
+            SELECT
+                SUPPLIER, COUNTY, STATUS, TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            FROM SUPPLIER_COUNTY_STAGE
+            WHERE TENANT_ID = %s;
+            """,
+            (tenant_id,),
+        )
+
+        conn.commit()
+        st.success(f"✅ Supplier by County uploaded successfully ({int(total_rows)} rows).")
+
+    except Exception as e:
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+        st.error(f"❌ Supplier by County upload failed: {e}")
+
+    finally:
+        try:
+            if cur:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
