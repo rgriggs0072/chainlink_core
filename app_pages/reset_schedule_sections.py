@@ -21,11 +21,14 @@ def render_reset_schedule_formatter_section():
     - Provide a Reset Schedule template for download.
     - Allow user to upload a completed template for validation/formatting.
     - On success, return a formatted workbook ready for upload step.
+
+    Fix (2026-03-25): Wrapped file_uploader in st.form to prevent CP reruns
+    from dropping the uploaded file before it can be read.
     """
     st.subheader("Reset Schedule Template & Formatter")
 
     # -------------------------------
-    # Step 0: Download template
+    # Step 0: Download template (outside form — download buttons can't be inside forms)
     # -------------------------------
     st.markdown("**Step 0:** Download the Reset Schedule template and fill in your data.")
 
@@ -62,26 +65,35 @@ def render_reset_schedule_formatter_section():
 
     # -------------------------------
     # Step 1: Upload for formatting/validation
+    # Wrapped in st.form so the file is held in place across reruns (CP fix)
     # -------------------------------
     st.markdown("**Step 1:** Upload the completed Reset Schedule template for validation & formatting.")
 
-    uploaded_file = st.file_uploader(
-        "Upload Reset Schedule Excel (based on the template)",
-        type=["xlsx"],
-        key="reset_schedule_upload",
-    )
+    with st.form("reset_schedule_formatter_form"):
+        uploaded_file = st.file_uploader(
+            "Upload Reset Schedule Excel (based on the template)",
+            type=["xlsx"],
+            key="reset_schedule_upload",
+        )
+        submitted = st.form_submit_button("Validate & Format")
 
-    if uploaded_file:
-        try:
-            workbook = openpyxl.load_workbook(uploaded_file)
-            with st.spinner("Validating and formatting reset schedule..."):
-                formatted_wb = format_reset_schedule(workbook)
+    if not submitted:
+        return
 
-            if formatted_wb:
-                st.success("✅ Formatting complete. Download to review before upload.")
-                download_workbook(formatted_wb, "Formatted_Reset_Schedule.xlsx")
-        except Exception as e:
-            st.error(f"Failed to format reset schedule: {e}")
+    if uploaded_file is None:
+        st.warning("Please upload a Reset Schedule Excel file before submitting.")
+        return
+
+    try:
+        workbook = openpyxl.load_workbook(uploaded_file)
+        with st.spinner("Validating and formatting reset schedule..."):
+            formatted_wb = format_reset_schedule(workbook)
+
+        if formatted_wb:
+            st.success("✅ Formatting complete. Download to review before upload.")
+            download_workbook(formatted_wb, "Formatted_Reset_Schedule.xlsx")
+    except Exception as e:
+        st.error(f"Failed to format reset schedule: {e}")
 
 
 def render_reset_schedule_uploader_section():
@@ -90,10 +102,12 @@ def render_reset_schedule_uploader_section():
     - User uploads the formatted reset schedule file.
     - User selects a chain (from CUSTOMERS.CHAIN_NAME).
     - We delete existing records for that chain and insert the new ones.
+
+    Fix (2026-03-25): Wrapped in st.form to prevent CP reruns from dropping
+    the uploaded file or firing the upload on every widget interaction.
     """
     st.subheader("Upload Reset Schedule to Tables")
 
-    # Use chain names from CUSTOMERS table, just like in Gap Report
     conn = st.session_state.get("conn")
     if not conn:
         st.error("Database connection not found.")
@@ -106,26 +120,39 @@ def render_reset_schedule_uploader_section():
         st.error(f"Could not load chain names: {e}")
         return
 
-    selected_chain = st.selectbox(
-        "Select Chain Name",
-        chain_options,
-        key="reset_schedule_chain_select",
-    )
+    with st.form("reset_schedule_uploader_form"):
+        selected_chain = st.selectbox(
+            "Select Chain Name",
+            chain_options,
+            key="reset_schedule_chain_select",
+        )
 
-    uploaded_file = st.file_uploader(
-        "Upload Formatted Reset Schedule File",
-        type=["xlsx"],
-        key="reset_schedule_final_upload",
-    )
+        uploaded_file = st.file_uploader(
+            "Upload Formatted Reset Schedule File",
+            type=["xlsx"],
+            key="reset_schedule_final_upload",
+        )
 
-    if uploaded_file and selected_chain:
-        try:
-            df = pd.read_excel(uploaded_file, engine="openpyxl")
-            st.write("Preview of formatted reset schedule:")
-            st.dataframe(df.head(), use_container_width=True)
+        submitted = st.form_submit_button("Upload Reset Schedule to Tables")
 
-            if st.button("Upload Reset Schedule to Tables", key="upload_reset_schedule_btn"):
-                with st.spinner("Uploading to Tables..."):
-                    upload_reset_data(df, selected_chain)
-        except Exception as e:
-            st.error(f"❌ Failed to upload reset schedule: {e}")
+    if not submitted:
+        return
+
+    if uploaded_file is None:
+        st.error("Please upload a formatted Reset Schedule file.")
+        return
+
+    if not selected_chain:
+        st.error("Please select a chain.")
+        return
+
+    try:
+        df = pd.read_excel(uploaded_file, engine="openpyxl")
+        st.markdown("**Preview of uploaded data:**")
+        st.dataframe(df.head(), use_container_width=True)
+
+        with st.spinner("Uploading to Tables..."):
+            upload_reset_data(df, selected_chain)
+
+    except Exception as e:
+        st.error(f"❌ Failed to upload reset schedule: {e}")
