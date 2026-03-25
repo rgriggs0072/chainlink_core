@@ -151,6 +151,20 @@ def render_reset_schedule_uploader_section():
         st.markdown("**Preview of uploaded data:**")
         st.dataframe(df.head(), use_container_width=True)
 
+        # --- Chain name validation: file must match selected chain ---
+        if "CHAIN_NAME" in df.columns:
+            file_chains = df["CHAIN_NAME"].dropna().str.strip().str.upper().unique().tolist()
+            selected_chain_upper = selected_chain.strip().upper()
+            mismatched = [c for c in file_chains if c != selected_chain_upper]
+
+            if mismatched:
+                st.error(
+                    f"❌ Chain name mismatch! You selected **{selected_chain_upper}** "
+                    f"but the file contains: **{', '.join(mismatched)}**\n\n"
+                    "Please select the correct chain from the dropdown and re-submit."
+                )
+                return
+
         with st.spinner("Uploading to Tables..."):
             upload_reset_data(df, selected_chain)
 
