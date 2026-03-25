@@ -276,13 +276,28 @@ def upload_reset_data(df: pd.DataFrame, selected_chain: str):
         delete_query = f"DELETE FROM RESET_SCHEDULE WHERE CHAIN_NAME = '{selected_chain}'"
         insert_query = f"INSERT INTO RESET_SCHEDULE ({', '.join(expected_columns)}) VALUES ({placeholders})"
 
+        def _safe_val(v):
+            if v is None:
+                return None
+            if isinstance(v, (np.integer,)):
+                return int(v)
+            if isinstance(v, (np.floating,)):
+                return float(v)
+            if isinstance(v, (np.bool_,)):
+                return bool(v)
+            return v
+
         with conn.cursor() as cur:
             cur.execute("BEGIN;")
             st.info(f"Removing existing RESET_SCHEDULE records for: {selected_chain}")
             cur.execute(delete_query)
 
             st.info("Inserting new records into RESET_SCHEDULE...")
-            cur.executemany(insert_query, df.values.tolist())
+            rows = [
+                [_safe_val(v) for v in row]
+                for row in df.values.tolist()
+            ]
+            cur.executemany(insert_query, rows)
             conn.commit()
 
         st.success(f"✅ Reset schedule uploaded for chain: {selected_chain}")
