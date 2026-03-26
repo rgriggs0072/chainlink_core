@@ -255,10 +255,41 @@ def upload_reset_data(df: pd.DataFrame, selected_chain: str):
         )
 
         # Normalize RESET_TIME → HH:MM:SS
-        df['RESET_TIME'] = (
-            pd.to_datetime(df['RESET_TIME'], errors='coerce')
-              .dt.strftime("%H:%M:%S")
-        )
+        # pd.to_datetime() cannot handle time objects or AM/PM strings reliably.
+        # _normalize_time() handles all formats openpyxl may return:
+        # time objects, datetime objects, "6:00 AM" strings, and Excel decimal fractions.
+        def _normalize_time(val):
+            if val is None:
+                return None
+            try:
+                if pd.isna(val):
+                    return None
+            except Exception:
+                pass
+            from datetime import time as time_type
+            if isinstance(val, time_type):
+                return val.strftime("%H:%M:%S")
+            if isinstance(val, datetime):
+                return val.strftime("%H:%M:%S")
+            s = str(val).strip()
+            if not s or s.lower() == 'nan':
+                return None
+            for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M"):
+                try:
+                    return datetime.strptime(s, fmt).strftime("%H:%M:%S")
+                except ValueError:
+                    continue
+            # Excel decimal fraction (e.g. 0.25 = 6:00 AM)
+            try:
+                f = float(s)
+                total_seconds = int(f * 86400)
+                h, rem = divmod(total_seconds, 3600)
+                m, sec = divmod(rem, 60)
+                return f"{h:02d}:{m:02d}:{sec:02d}"
+            except Exception:
+                return None
+
+        df['RESET_TIME'] = df['RESET_TIME'].apply(_normalize_time)
 
 
         df.replace({np.nan: None, '': None}, inplace=True)

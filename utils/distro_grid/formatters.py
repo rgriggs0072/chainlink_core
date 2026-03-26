@@ -30,6 +30,41 @@ from .schema import UPLOAD_COLUMNS
 UploadLayout = Literal["standard", "pivot"]
 
 
+def calculate_upc_check_digit(upc: str) -> str:
+    """
+    Normalize a UPC to a full 12-digit GS1 UPC-A by calculating the check digit.
+
+    Rules:
+    - 12 digits → already complete, return as-is
+    - 11 digits → calculate and append check digit → 12 digits
+    - 10 digits → leading zero was stripped by Excel; pad to 11 → calculate check digit → 12 digits
+    - Anything else → return as-is (caller should warn the user)
+
+    This ensures all UPCs stored in DISTRO_GRID are 12-digit and match
+    PRODUCTS.CARRIER_UPC without ambiguous 11-digit truncation collisions.
+    """
+    upc = str(upc).strip()
+
+    if not upc.isdigit():
+        return upc  # non-numeric — can't normalize
+
+    if len(upc) == 12:
+        return upc  # already complete
+
+    if len(upc) == 10:
+        upc = "0" + upc  # restore leading zero stripped by Excel
+
+    if len(upc) == 11:
+        # GS1 check digit calculation
+        odd_sum  = sum(int(upc[i]) for i in range(0, 11, 2))  # positions 1,3,5,7,9,11
+        even_sum = sum(int(upc[i]) for i in range(1, 10, 2))  # positions 2,4,6,8,10
+        total = (odd_sum * 3) + even_sum
+        check = (10 - (total % 10)) % 10
+        return upc + str(check)
+
+    return upc  # unexpected length — return as-is
+
+
 def _normalize_header(c) -> str:
     """
     Normalize Excel column headers so validation survives:
@@ -242,9 +277,18 @@ def _format_standard(df: pd.DataFrame) -> pd.DataFrame:
             .str.replace(r"\s*#\s*\d+$", "", regex=True)
         )
 
-    # Clean UPC hyphens
+    # Clean UPC hyphens then normalize to full 12-digit GS1 UPC
     if "UPC" in df.columns:
         df["UPC"] = df["UPC"].astype(str).str.strip().str.replace("-", "", regex=False)
+        df["UPC"] = df["UPC"].apply(calculate_upc_check_digit)
+
+        # Warn about any UPCs that couldn't be normalized to 12 digits
+        bad_upcs = df[df["UPC"].str.len() != 12]["UPC"].dropna().unique().tolist()
+        if bad_upcs:
+            st.warning(
+                f"⚠️ {len(bad_upcs)} UPC(s) could not be normalized to 12 digits and were left as-is: "
+                f"{bad_upcs[:5]}{'...' if len(bad_upcs) > 5 else ''}"
+            )
 
     # STORE_NUMBER: extract digits from values like "TARGET #1862"
     if "STORE_NUMBER" in df.columns:
@@ -313,12 +357,6 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
     - ACTIVATION_STATUS (blank)
     """
     df = df.copy()
-    st.write("DEBUG formatters.py path:", os.path.abspath(__file__))
-    st.write("DEBUG _format_pivot() running")
-
-    # Required ID columns in the pivot layout (normalized to uppercase/underscores)
-    # RIGHT BEFORE validation
-    st.write("DEBUG raw columns:", [repr(c) for c in df.columns.tolist()])
 
         # ------------------------------------------------------------------
     # Pivot header compatibility
@@ -380,13 +418,22 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
     out["STORE_NAME"] = ""  # resolved later via CUSTOMERS
     out["STORE_NUMBER"] = melted["STORE_NUMBER"]
 
-    # UPC cleanup
+    # UPC cleanup: strip hyphens then normalize to full 12-digit GS1 UPC
     out["UPC"] = (
         melted["UPC"]
         .astype(str)
         .str.strip()
         .str.replace("-", "", regex=False)
+        .apply(calculate_upc_check_digit)
     )
+
+    # Warn about any UPCs that couldn't be normalized to 12 digits
+    bad_upcs = out[out["UPC"].str.len() != 12]["UPC"].dropna().unique().tolist()
+    if bad_upcs:
+        st.warning(
+            f"⚠️ {len(bad_upcs)} UPC(s) could not be normalized to 12 digits and were left as-is: "
+            f"{bad_upcs[:5]}{'...' if len(bad_upcs) > 5 else ''}"
+        )
 
     # SKU cleanup from SKU_#
     out["SKU"] = (
