@@ -16,3 +16,4 @@ reportlab
 plotly
 packaging
 python-dotenv
+anthropic>=0.20.0

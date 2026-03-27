@@ -70,8 +70,8 @@ def render_ai_forecasts_submenu() -> str:
     """
     return option_menu(
         menu_title="",
-        options=["Predictive Purchases", "Predictive Truck Plan", "AI-Narrative Report", "Placement Intelligence"],
-        icons=["graph-up-arrow"],
+        options=["Predictive Purchases", "Predictive Truck Plan", "AI-Narrative Report", "Placement Intelligence", "Data Query"],
+        icons=["graph-up-arrow", "truck", "file-text", "grid", "search"],
         menu_icon="stars",
         default_index=0,
         orientation="horizontal",

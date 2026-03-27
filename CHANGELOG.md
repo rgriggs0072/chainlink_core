@@ -10,7 +10,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > Work in progress on `dev` branch. Move items here to the next version block on release.
 
 ### New Features
+- 
+
+### Bug Fixes
+- 
+
+### UI Changes
+- 
+
+### Snowflake / DB Changes
+- 
+
+### Breaking Changes
+- 
+
+---
+
+## [v1.1.0] — 2026-03-25
+
+### New Features
+- AI Data Query — admins can ask plain English questions about their data and get instant results. Claude generates a safe SELECT query, validates it, runs it against Snowflake, and shows results in a table with CSV download. Chain names loaded dynamically so AI always knows exact values. Includes example questions, retry logic on API overload, and friendly error messages
 - Placement Intelligence fully wired end-to-end: compares current DISTRO_GRID vs archived season, shows new/removed placements by manufacturer, generates GPT-4 AI narrative summary, and supports follow-up Q&A with full manufacturer context
+- New inline Reset Schedule editor for admins — edit RESET_DATE and RESET_TIME directly in table, only changed rows written back to Snowflake via targeted UPDATE statements
 
 ### Bug Fixes
 - Fix Placement Intelligence AI summary reading wrong session state keys causing blank output
@@ -19,11 +40,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Fix UPC matching — now uses same 11-digit normalization as PROCESS_GAP_REPORT (12-digit UPCs truncated to 11, matched via SQL EXISTS against PRODUCTS.CARRIER_UPC)
 - Fix pd.read_sql silent empty DataFrame on shared session connection — Placement Intelligence now opens a fresh tenant connection
 - Fix DEBUG st.write lines left in _format_pivot() showing on screen for all pivot uploads
+- Fix RESET_TIME stripping to NULL on upload — pd.to_datetime() cannot handle time objects or AM/PM strings; replaced with robust _normalize_time() helper that handles time objects, datetime objects, AM/PM strings, 24hr strings, and Excel decimal fractions
 
 ### UI Changes
 - Placement Intelligence rebuilt with persistent session state so Run Comparison and Generate AI Summary work independently without wiping each other on rerun
 - Results shown in tabbed layout (New / Removed Placements) with manufacturer summary + full detail expander
 - Follow-up Q&A wired with full conversation history including full manufacturer breakdown data so AI can answer specific questions accurately
+- Reset Schedule page restructured with expanders (Step 1: Download & Format, Step 2: Upload, Edit — admin only)
 
 ### Snowflake / DB Changes
 - Distro Grid formatter now normalizes all UPCs to full 12-digit GS1 UPC-A at upload time using check digit calculation: 11-digit → append check digit, 10-digit (Excel leading zero stripped) → pad to 11 → append check digit. Ensures clean matching against PRODUCTS.CARRIER_UPC going forward

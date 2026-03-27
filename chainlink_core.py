@@ -444,6 +444,7 @@ def main():
                 "Predictive Truck Plan":  "app_pages.predictive_truck_plan",
                 "AI-Narrative Report":    "app_pages.ai_narrative_report",
                 "Placement Intelligence": "app_pages.ai_placement_intelligence",
+                "Data Query":             "app_pages.data_query",
             }
             module_path = ai_pages.get(selected_ai)
             if not module_path:
