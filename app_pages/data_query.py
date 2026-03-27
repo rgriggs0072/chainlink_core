@@ -44,7 +44,7 @@ EXAMPLE_QUESTIONS = [
     "Show me all products from 2 TOWNS CIDERHOUSE",
     "Which salesperson covers the most stores?",
     "Show me all reset schedules for LUCKY in April 2026",
-    "Which suppliers are active in Sacramento county?",
+    "Which suppliers are active in San Joaquin county?",
     "Show me all distro grid items for RALEYS where YES_NO is 1",
 ]
 
