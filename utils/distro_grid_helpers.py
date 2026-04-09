@@ -27,6 +27,8 @@ import socket
 
 import pandas as pd
 import streamlit as st
+import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 from utils.distro_grid.schema import infer_season_label
 from sf_connector.service_connector import connect_to_tenant_snowflake
@@ -185,8 +187,7 @@ def format_pivot_table(workbook, selected_option):
     New flows will eventually replace this with a standardized pivot formatter
     in utils.distro_grid.formatters, but for now this stays as-is.
     """
-    import openpyxl
-    from openpyxl.utils.dataframe import dataframe_to_rows
+
 
     sheet = workbook.active
     data = sheet.values
@@ -310,32 +311,37 @@ def update_spinner(message: str):
     st.text(f"{message} ...")
 
 
-def call_procedure_update_DG(selected_chain: str):
+def call_procedure_update_DG(selected_chain: str | None = None):
     """
-    Sets the selected_chain session variable and calls the UPDATE_DISTRO_GRID()
-    procedure for the current tenant database/schema.
+    Calls the UPDATE_DISTRO_GRID(CHAIN_NAME_FILTER) procedure for the current
+    tenant database/schema.
 
-    This assumes UPDATE_DISTRO_GRID uses GETVARIABLE('selected_chain') inside Snowflake.
+    Args:
+        selected_chain: If provided, only updates DISTRO_GRID rows for that
+                        chain. If None, updates all chains (full refresh).
+
+    Notes:
+    - Passes chain directly as a parameter — no session variable needed.
+    - Call with selected_chain=None from a Snowflake worksheet or admin tool
+      to run a full refresh across all chains.
     """
     try:
         toml_info = st.session_state["toml_info"]
         conn = connect_to_tenant_snowflake(toml_info)
         cur = conn.cursor()
 
-        # Escape single quotes in chain name
-        safe_chain = selected_chain.replace("'", "''")
-        set_cmd = f"SET selected_chain = '{safe_chain}'"
-        cur.execute(set_cmd)
-
         db = toml_info["database"]
         schema = toml_info["schema"]
-        proc_call = f'CALL "{db}"."{schema}".UPDATE_DISTRO_GRID()'
 
-        cur.execute(proc_call)
+        # Pass chain as parameter (NULL = all chains)
+        proc_call = f'CALL "{db}"."{schema}".UPDATE_DISTRO_GRID(%s)'
+        cur.execute(proc_call, (selected_chain,))
+
         result = cur.fetchone()
 
         if result:
-            st.success(f"✅ Procedure result: {result[0]}")
+            scope = f"chain '{selected_chain}'" if selected_chain else "all chains"
+            st.success(f"✅ UPDATE_DISTRO_GRID complete ({scope}): {result[0]}")
         else:
             st.warning("⚠️ UPDATE_DISTRO_GRID completed but returned no result.")
 
@@ -371,6 +377,10 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
     Insert cleaned distro grid DataFrame into the tenant-specific DISTRO_GRID
     table in Snowflake, with archive protection via DG_ARCHIVE_TRACKING.
 
+    All steps (archive, delete, insert) run inside a single transaction.
+    If any step fails the entire transaction is rolled back and the error
+    is surfaced to the user — leaving DISTRO_GRID untouched.
+
     Parameters:
         conn:           Active Snowflake connection.
         df:             Cleaned and enriched distro grid data.
@@ -398,20 +408,19 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         df["TENANT_ID"] = tenant_id
         df["PRODUCT_ID"] = None
 
-    # 🔍 Step 1: Check archive tracking
     try:
+        # Begin explicit transaction — nothing commits until we say so
+        conn.autocommit(False)
+
+        # 🔍 Step 1: Check archive tracking
         cur.execute(
             f"SELECT 1 FROM {archive_tracking_table} WHERE CHAIN_NAME = %s AND SEASON = %s",
             (chain_upper, season),
         )
         already_archived = cur.fetchone() is not None
-    except Exception as e:
-        st.error(f"❌ Failed archive check: {e}")
-        raise
 
-    # 📦 Step 2: Archive current DG records (once per chain+season)
-    if not already_archived:
-        try:
+        # 📦 Step 2: Archive current DG records (once per chain+season)
+        if not already_archived:
             archive_insert_query = f"""
                 INSERT INTO {dg_archive_table} (
                     TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
@@ -438,84 +447,90 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
                 (chain_upper,),
             )
             archived_count = cur.fetchone()[0]
-            # If you want: st.success(f"Archived {archived_count} records for {chain_upper} - {season}")
-
-            # 🗂️ Log tracking
             cur.execute(
                 f"INSERT INTO {archive_tracking_table} (CHAIN_NAME, SEASON) VALUES (%s, %s)",
                 (chain_upper, season),
             )
+        else:
+            st.warning(
+                f"⚠️ Archive already exists for {chain_upper} - {season}. Skipping archive step."
+            )
 
-        except Exception as e:
-            st.error(f"❌ Archive step failed for {chain_upper}: {e}")
-            raise
-    else:
-        st.warning(
-            f"⚠️ Archive already exists for {chain_upper} - {season}. Skipping archive step."
+        # 🧹 Step 3: Delete old DISTRO_GRID rows for this chain
+        cur.execute(
+            f"DELETE FROM {dg_table} WHERE TRIM(UPPER(CHAIN_NAME)) = %s",
+            (chain_upper,),
         )
 
-    # 🧹 Step 3: Delete old DISTRO_GRID rows
-    try:
-        cur.execute(f"DELETE FROM {dg_table} WHERE TRIM(UPPER(CHAIN_NAME)) = %s", (selected_chain,))
-    except Exception as e:
-        st.error(f"❌ Delete step failed: {e}")
-        raise
+        # 📥 Step 4: Validate + insert new data
+        insert_columns = [
+            "CUSTOMER_ID",
+            "CHAIN_NAME",
+            "STORE_NAME",
+            "STORE_NUMBER",
+            "UPC",
+            "SKU",
+            "PRODUCT_ID",
+            "PRODUCT_NAME",
+            "MANUFACTURER",
+            "SEGMENT",
+            "YES_NO",
+            "ACTIVATION_STATUS",
+            "COUNTY",
+            "TENANT_ID",
+        ]
+        insert_query = f"""
+            INSERT INTO {dg_table} (
+                {", ".join(insert_columns)},
+                CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            )
+            VALUES ({", ".join(["%s"] * len(insert_columns))},
+                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), CURRENT_DATE())
+        """
+        records = df[insert_columns].values.tolist()
 
-    # 📥 Step 4: Insert new data
-    insert_columns = [
-        "CUSTOMER_ID",
-        "CHAIN_NAME",
-        "STORE_NAME",
-        "STORE_NUMBER",
-        "UPC",
-        "SKU",
-        "PRODUCT_ID",
-        "PRODUCT_NAME",
-        "MANUFACTURER",
-        "SEGMENT",
-        "YES_NO",
-        "ACTIVATION_STATUS",
-        "COUNTY",
-        "TENANT_ID",
-    ]
-    insert_query = f"""
-        INSERT INTO {dg_table} (
-            {", ".join(insert_columns)},
-            CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
-        )
-        VALUES ({", ".join(["%s"] * len(insert_columns))},
-                CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), CURRENT_DATE())
-    """
-    records = df[insert_columns].values.tolist()
+        # Pre-flight null check (before touching DB)
+        nullable = {
+            "CUSTOMER_ID",
+            "PRODUCT_ID",
+            "MANUFACTURER",
+            "COUNTY",
+            "SEGMENT",
+            "ACTIVATION_STATUS",
+        }
+        for i, row in enumerate(records):
+            for j, val in enumerate(row):
+                col_name = insert_columns[j]
+                if col_name not in nullable and (
+                    pd.isna(val) or str(val).strip().upper() == "NAN"
+                ):
+                    raise ValueError(
+                        f"Row {i + 1}, column '{col_name}' has an invalid null value. "
+                        f"Please fix the data and re-upload."
+                    )
 
-    # 🚦 Validate rows (non-null for certain fields)
-    nullable = {
-        "CUSTOMER_ID",
-        "PRODUCT_ID",
-        "MANUFACTURER",
-        "COUNTY",
-        "SEGMENT",
-        "ACTIVATION_STATUS",
-    }
-    for i, row in enumerate(records):
-        for j, val in enumerate(row):
-            col_name = insert_columns[j]
-            if col_name not in nullable and (
-                pd.isna(val) or str(val).strip().upper() == "NAN"
-            ):
-                raise ValueError(
-                    f"❌ Invalid null in row {i} column '{col_name}': {row}"
-                )
-
-    # 🚀 Insert data
-    try:
         cur.executemany(insert_query, records)
-    except Exception as e:
-        st.error(f"❌ Insert into DISTRO_GRID failed: {e}")
-        raise
-    finally:
-        cur.close()
+
+        # ✅ All steps succeeded — commit
         conn.commit()
+
+    except Exception as e:
+        # ❌ Any failure rolls back archive + delete + insert atomically
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        st.error(
+            f"❌ Upload failed and was fully rolled back. DISTRO_GRID is unchanged.\n\n"
+            f"Error detail: {e}"
+        )
+        raise
+
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 
 def sanitize_dataframe_for_snowflake(df: pd.DataFrame) -> pd.DataFrame:
@@ -592,6 +607,8 @@ def upload_distro_grid_to_snowflake(
         # if not unmatched.empty:
         #     st.warning(f"{len(unmatched)} rows had no CUSTOMER_ID match and were set to NULL.")
 
+    upload_succeeded = False
+
     try:
         st.markdown("### 🚚 Upload Progress")
 
@@ -605,6 +622,7 @@ def upload_distro_grid_to_snowflake(
             f"2️⃣ Deleting old records and inserting new grid data for {selected_chain} ..."
         )
         load_data_into_distro_grid(conn, df, selected_chain, season)
+        upload_succeeded = True
 
         st.success(
             f"✅ Uploaded {len(df)} records for '{selected_chain}' into DISTRO_GRID."
@@ -628,10 +646,33 @@ def upload_distro_grid_to_snowflake(
         update_spinner_callback(f"✅ Upload complete for {selected_chain} ({season})")
 
     except Exception as e:
-        conn.rollback()
-        st.error(f"❌ Upload failed: {e}")
+        if not upload_succeeded:
+            # load_data_into_distro_grid already rolled back and showed the error.
+            # Log the failure.
+            insert_log_entry(
+                user_id,
+                "UPDATE_DISTRO_GRID",
+                f"Upload FAILED for chain: {selected_chain}, season: {season}. Error: {e}",
+                False,
+                ip_address,
+                selected_chain,
+            )
+        else:
+            # Upload succeeded but post-procedure failed — surface the error
+            st.error(f"❌ Post-upload procedure failed: {e}")
+            insert_log_entry(
+                user_id,
+                "UPDATE_DISTRO_GRID",
+                f"Upload succeeded but post-procedure failed for chain: {selected_chain}. Error: {e}",
+                False,
+                ip_address,
+                selected_chain,
+            )
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ====================================================================================================================

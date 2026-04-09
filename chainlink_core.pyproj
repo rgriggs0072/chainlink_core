@@ -28,6 +28,7 @@
     <Compile Include="app_pages\ai_narrative_report.py" />
     <Compile Include="app_pages\ai_placement_intelligence.py" />
     <Compile Include="app_pages\data_exports.py" />
+    <Compile Include="app_pages\data_query.py" />
     <Compile Include="app_pages\distro_grid.py" />
     <Compile Include="app_pages\distro_grid_sections.py" />
     <Compile Include="app_pages\driver_forecast.py" />
