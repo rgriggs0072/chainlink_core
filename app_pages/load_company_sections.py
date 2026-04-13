@@ -543,7 +543,7 @@ def render_supplier_county_section():
                 # Not obvious template: check for legacy pivot shape
                 # (Supplier / County + county columns)
                 # Use our existing formatter to melt it.
-                formatted_df = format_supplier_by_county(supplier_file)
+                formatted_df = format_supplier_by_county(raw_df)
                 if formatted_df is None:
                     # format_supplier_by_county already emitted errors
                     return

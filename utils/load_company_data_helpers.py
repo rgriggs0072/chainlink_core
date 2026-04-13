@@ -471,7 +471,7 @@ def generate_customers_template() -> pd.DataFrame:
 def format_customers_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
     """
     Light normalization for Customers template uploads.
-    - Header mapping: ignores spaces/underscores/case + explicit source aliases
+    - Header mapping: ignores spaces/underscores/case
     - Normalizes text columns
     - Cleans STORE_NAME (#/$ suffix removal)
     """
@@ -480,41 +480,13 @@ def format_customers_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
     def _norm(h: str) -> str:
         return str(h).strip().lower().replace(" ", "").replace("_", "")
 
-    # Explicit aliases for source export column names -> canonical names
-    # Key: _norm(source header), Value: canonical column name
-    ALIAS_MAP = {
-        "customerid":        "CUSTOMER_ID",
-        "chain":             "CHAIN_NAME",
-        "chainname":         "CHAIN_NAME",
-        "customername":      "STORE_NAME",
-        "storename":         "STORE_NAME",
-        "chainstorenumber":  "STORE_NUMBER",
-        "storenumber":       "STORE_NUMBER",
-        "shippingaddress":   "ADDRESS",
-        "address":           "ADDRESS",
-        "city":              "CITY",
-        "county":            "COUNTY",
-        "salesman":          "SALESPERSON",
-        "salesmanassigned":  "SALESPERSON",
-        "salesperson":       "SALESPERSON",
-        "accountstatus":     "ACCOUNT_STATUS",
-    }
-
     norm_map = {_norm(c): c for c in df.columns}
     target_cols = [r.name for r in CUSTOMERS_SCHEMA]
 
     rename = {}
-    # First pass: direct canonical name match (template case)
     for t in target_cols:
         if _norm(t) in norm_map:
             rename[norm_map[_norm(t)]] = t
-
-    # Second pass: alias match for source exports
-    for norm_src, original_col in norm_map.items():
-        if original_col not in rename and norm_src in ALIAS_MAP:
-            canonical = ALIAS_MAP[norm_src]
-            if canonical not in rename.values():
-                rename[original_col] = canonical
 
     df = df.rename(columns=rename)
     df.columns = [str(c).strip() for c in df.columns]
@@ -1141,10 +1113,15 @@ def validate_supplier_county_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame,
     return df, errors
 
 
-def format_supplier_by_county(uploaded_file) -> pd.DataFrame:
+def format_supplier_by_county(uploaded_file_or_df) -> pd.DataFrame:
     """
     Convert Supplier-by-County pivot export into canonical 3-column format,
     including "No" rows (full supplier x county matrix).
+
+    Accepts either:
+      - A file-like object (original behavior)
+      - A pre-read DataFrame (avoids buffer exhaustion on Streamlit Cloud
+        when the file has already been read once for column detection)
 
     Pivot layout:
       - First col: supplier name (header often "Supplier / County")
@@ -1155,7 +1132,10 @@ def format_supplier_by_county(uploaded_file) -> pd.DataFrame:
       SUPPLIER, COUNTY, STATUS (Yes/No)
       One row per (SUPPLIER, COUNTY)
     """
-    df = pd.read_excel(uploaded_file, engine="openpyxl")
+    if isinstance(uploaded_file_or_df, pd.DataFrame):
+        df = uploaded_file_or_df.copy()
+    else:
+        df = pd.read_excel(uploaded_file_or_df, engine="openpyxl")
     if df.empty:
         return pd.DataFrame(columns=SUPPLIER_COUNTY_REQUIRED_COLUMNS)
 
@@ -1167,12 +1147,7 @@ def format_supplier_by_county(uploaded_file) -> pd.DataFrame:
     df["SUPPLIER"] = df["SUPPLIER"].map(_clean_cell)
     df = df[df["SUPPLIER"].notna() & (df["SUPPLIER"].str.strip() != "")].copy()
 
-    # Exclude TOTAL (and any other summary columns) — they are not county names
-    SUMMARY_COLS = {"TOTAL", "GRAND TOTAL", "SUBTOTAL"}
-    county_cols = [
-        c for c in df.columns
-        if c != "SUPPLIER" and str(c).strip().upper() not in SUMMARY_COLS
-    ]
+    county_cols = [c for c in df.columns if c != "SUPPLIER"]
 
     long_df = df.melt(
         id_vars=["SUPPLIER"],
