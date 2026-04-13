@@ -12,6 +12,11 @@ from utils.load_company_data_helpers import (
 
     # --- Legacy formatters (keep only if still used in other sections) ---
     format_customers_report,
+
+    t.write("DEBUG cols:", list(raw_df.columns))
+    st.write("DEBUG shape:", raw_df.shape)
+    formatted_df = format_supplier_by_county(raw_df)
+
     format_supplier_by_county,
 
     # --- Products helpers (still used) ---
