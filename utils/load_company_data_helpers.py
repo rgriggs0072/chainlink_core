@@ -1,7 +1,7 @@
-﻿# utils/load_company_data_helpers.py
+# utils/load_company_data_helpers.py
 """
 
-
+4/13/2026
 ⚠️ IMPORTANT – DO NOT PARTIALLY EDIT THIS FILE
 
 This module is intentionally centralized and order-sensitive.
@@ -1147,7 +1147,12 @@ def format_supplier_by_county(uploaded_file_or_df) -> pd.DataFrame:
     df["SUPPLIER"] = df["SUPPLIER"].map(_clean_cell)
     df = df[df["SUPPLIER"].notna() & (df["SUPPLIER"].str.strip() != "")].copy()
 
-    county_cols = [c for c in df.columns if c != "SUPPLIER"]
+    # Exclude TOTAL (and any other summary columns) — they are not county names
+    SUMMARY_COLS = {"TOTAL", "GRAND TOTAL", "SUBTOTAL"}
+    county_cols = [
+        c for c in df.columns
+        if c != "SUPPLIER" and str(c).strip().upper() not in SUMMARY_COLS
+    ]
 
     long_df = df.melt(
         id_vars=["SUPPLIER"],
