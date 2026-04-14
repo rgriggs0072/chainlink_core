@@ -1134,8 +1134,7 @@ def format_supplier_by_county(uploaded_file_or_df) -> pd.DataFrame:
         if c != "SUPPLIER" and str(c).strip().upper() not in SUMMARY_COLS
     ]
     
-    # TEMP DEBUG
-    st.write("DEBUG county_cols:", county_cols)
+    
 
     long_df = df.melt(
         id_vars=["SUPPLIER"],
