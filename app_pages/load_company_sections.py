@@ -571,6 +571,10 @@ def render_supplier_county_section():
             else:
                 st.success("✅ Validation passed. Preview:")
                 st.dataframe(cleaned_df.head(50),  width='stretch')
+               
+                st.write("DEBUG cleaned_df cols:", list(cleaned_df.columns))
+                st.write("DEBUG cleaned_df shape:", cleaned_df.shape)
+                st.write("DEBUG sample:", cleaned_df.head(3))
 
                 if st.button("Upload Supplier by County to Snowflake",
                              key="supplier_cty_upload_btn"):
