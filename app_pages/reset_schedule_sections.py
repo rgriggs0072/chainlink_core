@@ -136,7 +136,7 @@ def render_reset_schedule_uploader_section():
     try:
         df = pd.read_excel(uploaded_file, engine="openpyxl")
         st.markdown("**Preview of uploaded data:**")
-        st.dataframe(df.head(), use_container_width=True)
+        st.dataframe(df.head(), width='stretch')
 
         # Chain name validation — block upload if file doesn't match selection
         if "CHAIN_NAME" in df.columns:
@@ -252,7 +252,7 @@ def render_reset_schedule_editor_section():
     edited_df = st.data_editor(
         df,
         column_config=column_config,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         key="rs_inline_editor",
         num_rows="fixed",  # prevent adding/deleting rows

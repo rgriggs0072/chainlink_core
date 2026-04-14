@@ -287,7 +287,7 @@ def render():
                 f"**{len(df):,} row(s)** returned"
                 f"{' — results limited to 500 rows' if limited else ''}."
             )
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
 
             st.download_button(
                 "⬇️ Download Results as CSV",

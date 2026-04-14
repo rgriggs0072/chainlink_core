@@ -1,4 +1,4 @@
-﻿# ---------------- app_pages/sales_contacts_admin.py ----------------
+# ---------------- app_pages/sales_contacts_admin.py ----------------
 # -*- coding: utf-8 -*-
 """
 Sales Contacts Admin Page
@@ -275,7 +275,7 @@ def _render_contacts_audit_expander(contacts_df: pd.DataFrame):
             return
 
         cols = [c for c in contacts_df.columns if c not in {"TENANT_ID"}]
-        st.dataframe(contacts_df[cols], use_container_width=True, height=320)
+        st.dataframe(contacts_df[cols], width='stretch', height=320)
 
 
 def _render_manage_single_contact(conn, tenant_id: int, contacts_df: pd.DataFrame):
@@ -392,7 +392,7 @@ def _render_bulk_upload(conn, tenant_id: int):
         data=_build_contacts_template_xlsx(),
         file_name="sales_contacts_template.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width='stretch',
         key="sc_template_dl",
     )
 

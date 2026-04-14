@@ -1,4 +1,4 @@
-﻿# ------------------------- app_pages/email_gap_report.py ------------------------------
+# ------------------------- app_pages/email_gap_report.py ------------------------------
 # -*- coding: utf-8 -*-
 """
 Gap History Emailer (PDF per salesperson)
@@ -486,7 +486,7 @@ def render() -> None:
         ascending=[False, True, True],
     )
 
-    st.dataframe(sp_df, use_container_width=True, hide_index=True)
+    st.dataframe(sp_df, width='stretch', hide_index=True)
     st.write(f"{selected_sp}: {len(sp_df)} active gaps")
 
     # ✅ Execution summary MUST be computed here (runtime), not at import time
@@ -505,7 +505,7 @@ def render() -> None:
         pdf_bytes,
         file_name=f"{_safe_label(selected_sp)}_gap_history.pdf",
         mime="application/pdf",
-        use_container_width=True,
+        width='stretch',
     )
 
     # All PDFs ZIP (per-person exec summary so ZIP matches email too)
@@ -523,7 +523,7 @@ def render() -> None:
         _zip_pdfs(all_pdfs, "gap_history"),
         file_name=f"gap_history_{datetime.now():%Y%m%d_%H%M}.zip",
         mime="application/zip",
-        use_container_width=True,
+        width='stretch',
     )
 
     # -------------------------------------------------------------------------
@@ -541,7 +541,7 @@ def render() -> None:
 
     s1, s2, s3 = st.columns([1, 1, 0.7])
 
-    if s1.button(f"Send {selected_sp} Only", type="primary", use_container_width=True):
+    if s1.button(f"Send {selected_sp} Only", type="primary", width='stretch'):
 
         result = send_gap_history_pdfs(
             con=conn,
@@ -578,7 +578,7 @@ def render() -> None:
 
 
 
-    if s2.button("Send ALL", type="secondary", use_container_width=True):
+    if s2.button("Send ALL", type="secondary", width='stretch'):
 
         result = send_gap_history_pdfs(
             con=conn,
@@ -615,7 +615,7 @@ def render() -> None:
 
 
 
-    if s3.button("Clear", use_container_width=True):
+    if s3.button("Clear", width='stretch'):
 
         for k in SESSION_DEFAULTS:
             st.session_state[k] = None

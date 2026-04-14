@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 from openpyxl import Workbook
 import pandas as pd
 from io import BytesIO
@@ -158,7 +158,7 @@ def render_sales_section():
 
     cleaned_df = result.cleaned_df
     st.success("✅ Validation passed. Preview of cleaned Sales data:")
-    st.dataframe(cleaned_df.head(25), use_container_width=True)
+    st.dataframe(cleaned_df.head(25), width='stretch')
 
     st.markdown("---")
 
@@ -565,11 +565,11 @@ def render_supplier_county_section():
                 st.error("❌ Validation failed:")
                 for e in errors:
                     st.markdown(f"- {e}")
-                st.dataframe(cleaned_df.head(50),  use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
 
             else:
                 st.success("✅ Validation passed. Preview:")
-                st.dataframe(cleaned_df.head(50),  use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
                
                
 
