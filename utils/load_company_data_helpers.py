@@ -1114,24 +1114,6 @@ def validate_supplier_county_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame,
 
 
 def format_supplier_by_county(uploaded_file_or_df) -> pd.DataFrame:
-    """
-    Convert Supplier-by-County pivot export into canonical 3-column format,
-    including "No" rows (full supplier x county matrix).
-
-    Accepts either:
-      - A file-like object (original behavior)
-      - A pre-read DataFrame (avoids buffer exhaustion on Streamlit Cloud
-        when the file has already been read once for column detection)
-
-    Pivot layout:
-      - First col: supplier name (header often "Supplier / County")
-      - Remaining cols: county names
-      - Cell: typically 1 for present, blank for not present
-
-    Output:
-      SUPPLIER, COUNTY, STATUS (Yes/No)
-      One row per (SUPPLIER, COUNTY)
-    """
     if isinstance(uploaded_file_or_df, pd.DataFrame):
         df = uploaded_file_or_df.copy()
     else:
@@ -1143,16 +1125,17 @@ def format_supplier_by_county(uploaded_file_or_df) -> pd.DataFrame:
     first_col = df.columns[0]
     df = df.rename(columns={first_col: "SUPPLIER"})
 
-    # Drop blank supplier rows
     df["SUPPLIER"] = df["SUPPLIER"].map(_clean_cell)
     df = df[df["SUPPLIER"].notna() & (df["SUPPLIER"].str.strip() != "")].copy()
 
-    # Exclude TOTAL (and any other summary columns) — they are not county names
     SUMMARY_COLS = {"TOTAL", "GRAND TOTAL", "SUBTOTAL"}
     county_cols = [
         c for c in df.columns
         if c != "SUPPLIER" and str(c).strip().upper() not in SUMMARY_COLS
     ]
+    
+    # TEMP DEBUG
+    st.write("DEBUG county_cols:", county_cols)
 
     long_df = df.melt(
         id_vars=["SUPPLIER"],
