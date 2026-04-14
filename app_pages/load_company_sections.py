@@ -551,8 +551,8 @@ def render_supplier_county_section():
                  # Not obvious template: check for legacy pivot shape
                 # (Supplier / County + county columns)
                 # Use our existing formatter to melt it.
-                st.write("DEBUG cols:", list(raw_df.columns))
-                st.write("DEBUG shape:", raw_df.shape)
+                #st.write("DEBUG cols:", list(raw_df.columns))
+                #st.write("DEBUG shape:", raw_df.shape)
                 formatted_df = format_supplier_by_county(raw_df)
                 if formatted_df is None:
                     # format_supplier_by_county already emitted errors
@@ -572,9 +572,9 @@ def render_supplier_county_section():
                 st.success("✅ Validation passed. Preview:")
                 st.dataframe(cleaned_df.head(50),  use_container_width=True)
                
-                st.write("DEBUG cleaned_df cols:", list(cleaned_df.columns))
-                st.write("DEBUG cleaned_df shape:", cleaned_df.shape)
-                st.write("DEBUG sample:", cleaned_df.head(3))
+                #st.write("DEBUG cleaned_df cols:", list(cleaned_df.columns))
+                #st.write("DEBUG cleaned_df shape:", cleaned_df.shape)
+                #st.write("DEBUG sample:", cleaned_df.head(3))
 
                 if st.button("Upload Supplier by County to Snowflake",
                              key="supplier_cty_upload_btn"):
