@@ -11,11 +11,9 @@ from utils.load_company_data_helpers import (
     write_supplier_by_county_to_snowflake,
 
     # --- Legacy formatters (keep only if still used in other sections) ---
-    format_customers_report,
+    
+   
 
-    t.write("DEBUG cols:", list(raw_df.columns))
-    st.write("DEBUG shape:", raw_df.shape)
-    formatted_df = format_supplier_by_county(raw_df)
 
     format_supplier_by_county,
 
@@ -122,6 +120,7 @@ def render_sales_section():
     # -------------------------
     try:
         formatted_df = format_sales_upload(raw_df)
+
     except Exception as e:
         st.error(f"❌ Error during Sales normalization: {e}")
         return
@@ -548,6 +547,12 @@ def render_supplier_county_section():
                 # Not obvious template: check for legacy pivot shape
                 # (Supplier / County + county columns)
                 # Use our existing formatter to melt it.
+
+                 # Not obvious template: check for legacy pivot shape
+                # (Supplier / County + county columns)
+                # Use our existing formatter to melt it.
+                st.write("DEBUG cols:", list(raw_df.columns))
+                st.write("DEBUG shape:", raw_df.shape)
                 formatted_df = format_supplier_by_county(raw_df)
                 if formatted_df is None:
                     # format_supplier_by_county already emitted errors
