@@ -566,11 +566,11 @@ def render_supplier_county_section():
                 st.error("❌ Validation failed:")
                 for e in errors:
                     st.markdown(f"- {e}")
-                st.dataframe(cleaned_df.head(50),  width='stretch')
+                st.dataframe(cleaned_df.head(50),  use_container_width=True)
 
             else:
                 st.success("✅ Validation passed. Preview:")
-                st.dataframe(cleaned_df.head(50),  width='stretch')
+                st.dataframe(cleaned_df.head(50),  use_container_width=True)
                
                 st.write("DEBUG cleaned_df cols:", list(cleaned_df.columns))
                 st.write("DEBUG cleaned_df shape:", cleaned_df.shape)
