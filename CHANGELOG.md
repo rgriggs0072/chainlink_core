@@ -24,7 +24,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Breaking Changes
 - 
 
----
+### Backlog / Known Issues
+- Add formatter validation for YES_NO column — block upload if column is empty, block if no rows have YES_NO = 1, block if any values are not 0 or 1. Silent conversion of empty to 0 during sanitization was masking bad uploads (discovered during v1.2.0 CVS rebuild)
+- Add formatter validation for SKU column — warn and default to 0 if SKU column is empty or contains non-numeric values. Currently sanitization silently fills with 0 without warning
+- Add formatter validation to catch SKU values with incorrect digit count — e.g. removing a digit from a valid SKU should be flagged
 
 ## [v1.2.0] — 2026-04-20
 
