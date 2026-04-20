@@ -6,18 +6,23 @@ Overview for future devs:
 - Defines the logical upload schema (what we expect from a Distro Grid Excel).
 - Documents the physical Snowflake table shapes for reference:
     DISTRO_GRID
-    DISTRO_GRID_ARCHIVE
+    DISTRO_GRID_ARCHIVE_FULL     — full recovery backup (renamed from DISTRO_GRID_ARCHIVE in v1.2.0)
+    DISTRO_GRID_MATCHED_ARCHIVE  — filtered archive for Placement Intelligence (new in v1.2.0)
     DG_ARCHIVE_TRACKING
     RESET_SCHEDULE (related)
 - All formatters/validators should reference these definitions instead of
   hard-coding column names or valid values.
+
+v1.2.0 changes:
+  - DISTRO_GRID_ARCHIVE renamed to DISTRO_GRID_ARCHIVE_FULL.
+  - DISTRO_GRID_MATCHED_ARCHIVE added as new filtered archive for Placement Intelligence.
+  - DG_ARCHIVE_TRACKING updated with FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT columns,
+    replacing the original ARCHIVED_AT column.
 """
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Literal
 from datetime import date as _date
-
-
 
 
 def infer_season_label(today: _date | None = None) -> str:
@@ -37,7 +42,6 @@ def infer_season_label(today: _date | None = None) -> str:
     else:
         core = "Fall"
     return f"{core} {d.year}"
-
 
 
 @dataclass(frozen=True)
@@ -198,7 +202,10 @@ DISTRO_GRID_DB_COLUMNS: List[str] = [
     "LAST_LOAD_DATE",
 ]
 
-DISTRO_GRID_ARCHIVE_DB_COLUMNS: List[str] = [
+# v1.2.0: Renamed from DISTRO_GRID_ARCHIVE_DB_COLUMNS.
+# DISTRO_GRID_ARCHIVE_FULL is the raw unfiltered backup of every chain grid row —
+# all UPCs matched or not. Used for data recovery only. Retention: 1 year rolling.
+DISTRO_GRID_ARCHIVE_FULL_DB_COLUMNS: List[str] = [
     "DISTRO_GRID_ARCHIVE_ID",
     "TENANT_ID",
     "CUSTOMER_ID",
@@ -220,10 +227,44 @@ DISTRO_GRID_ARCHIVE_DB_COLUMNS: List[str] = [
     "ARCHIVE_DATE",
 ]
 
+# v1.2.0: New table. DISTRO_GRID_MATCHED_ARCHIVE contains only Delta Pacific
+# placements that pass the three-way filter:
+#   1. PRODUCT_ID <> 0    — product exists in Delta Pacific catalog
+#   2. COUNTY is valid    — store is in a served territory
+#   3. SUPPLIER_COUNTY    — manufacturer is authorized for that county
+# Used exclusively by Placement Intelligence for season-over-season comparisons.
+# Retention: 2 years rolling.
+DISTRO_GRID_MATCHED_ARCHIVE_DB_COLUMNS: List[str] = [
+    "DISTRO_GRID_ARCHIVE_ID",
+    "TENANT_ID",
+    "CUSTOMER_ID",
+    "CHAIN_NAME",
+    "STORE_NAME",
+    "STORE_NUMBER",
+    "COUNTY",
+    "PRODUCT_ID",
+    "UPC",
+    "SKU",
+    "PRODUCT_NAME",
+    "MANUFACTURER",
+    "SEGMENT",
+    "YES_NO",
+    "ACTIVATION_STATUS",
+    "CREATED_AT",
+    "UPDATED_AT",
+    "LAST_LOAD_DATE",
+    "ARCHIVE_DATE",
+]
+
+# v1.2.0: ARCHIVED_AT column replaced by FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT
+# to track which archive tables have been written for each chain+season.
+# Both timestamps are stamped together in the same transaction at upload time.
 DG_ARCHIVE_TRACKING_DB_COLUMNS: List[str] = [
     "CHAIN_NAME",
     "SEASON",
-    "ARCHIVED_AT",
+    "ARCHIVED_AT",          # legacy — kept for backward compatibility, no longer written
+    "FULL_ARCHIVED_AT",     # stamped when DISTRO_GRID_ARCHIVE_FULL is written
+    "MATCHED_ARCHIVED_AT",  # stamped when DISTRO_GRID_MATCHED_ARCHIVE is written
 ]
 
 RESET_SCHEDULE_DB_COLUMNS: List[str] = [
@@ -246,8 +287,3 @@ RESET_SCHEDULE_DB_COLUMNS: List[str] = [
     "UPDATED_AT",
     "LAST_LOAD_DATE",
 ]
-
-
-
-
-
