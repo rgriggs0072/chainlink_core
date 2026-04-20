@@ -274,6 +274,15 @@ def insert_log_entry(
     """
     Insert an activity row into the tenant LOG table.
 
+    LOG table schema:
+        LOG_ID    — auto-increment identity
+        EVENT_TS  — timestamp, defaults to CURRENT_TIMESTAMP()
+        LEVEL     — 'INFO' or 'ERROR'
+        TENANT_ID — tenant identifier
+        MESSAGE   — human-readable description of the event
+        CONTEXT   — JSON variant for structured extra data
+                    (stores user_id, activity_type, ip_address, user_agent)
+
     Parameters:
         user_id:       Application user identifier.
         activity_type: Short label (e.g., 'UPDATE_DISTRO_GRID').
@@ -291,13 +300,35 @@ def insert_log_entry(
     try:
         conn = connect_to_tenant_snowflake(toml_info)
         cursor = conn.cursor()
+
+        # Build structured context as JSON — stores fields that don't have
+        # dedicated columns in the LOG table
+        import json
+        context = json.dumps({
+            "user_id": user_id,
+            "activity_type": activity_type,
+            "ip_address": ip_address,
+            "user_agent": user_agent or "",
+        })
+
+        level = "INFO" if success else "ERROR"
+        tenant_id = toml_info.get("tenant_id", "unknown")
+
         cursor.execute(
             """
-            INSERT INTO LOG (TIMESTAMP, USERID, ACTIVITYTYPE, DESCRIPTION, SUCCESS, IPADDRESS, USERAGENT)
-            VALUES (CURRENT_TIMESTAMP(), %s, %s, %s, %s, %s, %s)
+            INSERT INTO LOG (EVENT_TS, LEVEL, TENANT_ID, MESSAGE, CONTEXT)
+            SELECT CURRENT_TIMESTAMP(), %s, %s, %s, PARSE_JSON(%s)
+            FROM (SELECT 1)
             """,
-            (user_id, activity_type, description, success, ip_address, user_agent or ""),
+            (
+                level,
+                tenant_id,
+                f"[{activity_type}] {description}",
+                context,
+            ),
         )
+
+
         cursor.close()
         conn.close()
     except Exception as e:
@@ -381,6 +412,13 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
     If any step fails the entire transaction is rolled back and the error
     is surfaced to the user — leaving DISTRO_GRID untouched.
 
+    Archive strategy (v1.2.0):
+    - DISTRO_GRID_ARCHIVE_FULL: receives everything from DISTRO_GRID for the
+      chain — all UPCs matched or not. Used for data recovery.
+    - DISTRO_GRID_MATCHED_ARCHIVE: receives only Delta Pacific placements
+      (PRODUCT_ID <> 0, valid COUNTY, authorized SUPPLIER_COUNTY join).
+      Used by Placement Intelligence for season-over-season comparisons.
+
     Parameters:
         conn:           Active Snowflake connection.
         df:             Cleaned and enriched distro grid data.
@@ -396,7 +434,8 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         raise ValueError("Missing database or schema in session state (toml_info).")
 
     dg_table = f'"{db}"."{schema}".DISTRO_GRID'
-    dg_archive_table = f'"{db}"."{schema}".DISTRO_GRID_ARCHIVE'
+    dg_archive_full_table = f'"{db}"."{schema}".DISTRO_GRID_ARCHIVE_FULL'       # renamed from DISTRO_GRID_ARCHIVE — full recovery backup
+    dg_archive_matched_table = f'"{db}"."{schema}".DISTRO_GRID_MATCHED_ARCHIVE' # new — filtered archive for Placement Intelligence
     archive_tracking_table = f'"{db}"."{schema}".DG_ARCHIVE_TRACKING'
 
     chain_upper = selected_chain.strip().upper()
@@ -412,7 +451,7 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         # Begin explicit transaction — nothing commits until we say so
         conn.autocommit(False)
 
-        # 🔍 Step 1: Check archive tracking
+        # 🔍 Step 1: Check archive tracking — only archive once per chain+season
         cur.execute(
             f"SELECT 1 FROM {archive_tracking_table} WHERE CHAIN_NAME = %s AND SEASON = %s",
             (chain_upper, season),
@@ -421,36 +460,69 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
 
         # 📦 Step 2: Archive current DG records (once per chain+season)
         if not already_archived:
-            archive_insert_query = f"""
-                INSERT INTO {dg_archive_table} (
-                    TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
-                    PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
-                    SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
-                    ARCHIVE_DATE, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
-                )
-                SELECT
-                    TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
-                    PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
-                    SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
-                    CURRENT_DATE(), CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+
+            # Shared column lists used by both archive INSERT statements
+            archive_columns = """
+                TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
+                PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
+                SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
+                ARCHIVE_DATE, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            """
+            archive_select = """
+                TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
+                PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
+                SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
+                CURRENT_DATE(), CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+            """
+
+            # Step 2A — Write full archive (everything, no filter)
+            # Captures all UPCs from the chain grid regardless of whether
+            # Delta Pacific carries them. Used for data recovery only.
+            cur.execute(f"""
+                INSERT INTO {dg_archive_full_table} ({archive_columns})
+                SELECT {archive_select}
                 FROM {dg_table}
                 WHERE TRIM(UPPER(CHAIN_NAME)) = %s
-            """
-            cur.execute(archive_insert_query, (chain_upper,))
-            cur.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM {dg_archive_table}
-                WHERE TRIM(UPPER(CHAIN_NAME)) = %s
-                  AND ARCHIVE_DATE = CURRENT_DATE()
-                """,
-                (chain_upper,),
-            )
-            archived_count = cur.fetchone()[0]
-            cur.execute(
-                f"INSERT INTO {archive_tracking_table} (CHAIN_NAME, SEASON) VALUES (%s, %s)",
-                (chain_upper, season),
-            )
+            """, (chain_upper,))
+
+      
+
+            # Step 2B — Write matched archive (filtered to Delta Pacific placements only)
+            # Three-way filter ensures only valid placements are archived:
+            #   1. PRODUCT_ID <> 0    — product exists in Delta Pacific catalog
+            #   2. COUNTY is valid    — store is in a served territory
+            #   3. SUPPLIER_COUNTY    — manufacturer is authorized for that county
+            # This is the archive that Placement Intelligence reads from.
+            # UPPER(TRIM()) wrapping on manufacturer join is intentional —
+            # inconsistent casing between tables has caused issues before.
+            cur.execute(f"""
+                INSERT INTO {dg_archive_matched_table} ({archive_columns})
+                SELECT
+                    dg.TENANT_ID, dg.CUSTOMER_ID, dg.CHAIN_NAME, dg.STORE_NAME, dg.STORE_NUMBER,
+                    dg.PRODUCT_ID, dg.UPC, dg.SKU, dg.PRODUCT_NAME, dg.MANUFACTURER,
+                    dg.SEGMENT, dg.YES_NO, dg.ACTIVATION_STATUS, dg.COUNTY,
+                    CURRENT_DATE(), dg.CREATED_AT, dg.UPDATED_AT, dg.LAST_LOAD_DATE
+                FROM {dg_table} dg
+                INNER JOIN "{db}"."{schema}".SUPPLIER_COUNTY sc
+                    ON UPPER(TRIM(sc.SUPPLIER)) = UPPER(TRIM(dg.MANUFACTURER))
+                    AND UPPER(TRIM(sc.COUNTY)) = UPPER(TRIM(dg.COUNTY))
+                    AND sc.STATUS = 'Yes'
+                    AND sc.TENANT_ID = dg.TENANT_ID
+                WHERE TRIM(UPPER(dg.CHAIN_NAME)) = %s
+                AND dg.PRODUCT_ID <> 0
+                AND dg.COUNTY IS NOT NULL
+                AND dg.COUNTY <> 'None'
+            """, (chain_upper,))
+
+            # Step 2C — Update tracking for both archives
+            # FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT are stamped together
+            # since both archives are written in the same transaction.
+            cur.execute(f"""
+                INSERT INTO {archive_tracking_table} 
+                    (CHAIN_NAME, SEASON, FULL_ARCHIVED_AT, MATCHED_ARCHIVED_AT)
+                VALUES (%s, %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+            """, (chain_upper, season))
+
         else:
             st.warning(
                 f"⚠️ Archive already exists for {chain_upper} - {season}. Skipping archive step."
@@ -490,6 +562,7 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         records = df[insert_columns].values.tolist()
 
         # Pre-flight null check (before touching DB)
+        # Nullable columns are allowed to be None/empty — all others must have a value
         nullable = {
             "CUSTOMER_ID",
             "PRODUCT_ID",
@@ -511,11 +584,12 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
 
         cur.executemany(insert_query, records)
 
-        # ✅ All steps succeeded — commit
+        # ✅ All steps succeeded — commit the full transaction
         conn.commit()
 
     except Exception as e:
         # ❌ Any failure rolls back archive + delete + insert atomically
+        # DISTRO_GRID and both archive tables are left completely untouched
         try:
             conn.rollback()
         except Exception:
@@ -531,7 +605,6 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
             cur.close()
         except Exception:
             pass
-
 
 def sanitize_dataframe_for_snowflake(df: pd.DataFrame) -> pd.DataFrame:
     """
