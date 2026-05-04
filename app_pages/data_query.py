@@ -199,13 +199,8 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
         if re.search(rf'\b{keyword}\b', sql_upper):
             return False, f"Query contains disallowed keyword: {keyword}"
 
-    # Extract CTE names so we don't flag them as unknown tables
-    cte_names = set(re.findall(r'\b(\w+)\s+AS\s*\(', sql_upper))
-
     table_refs = re.findall(r'(?:FROM|JOIN)\s+([A-Z_][A-Z0-9_]*)', sql_upper)
     for table in table_refs:
-        if table in cte_names:
-            continue  # CTE alias — not a real table
         if table not in ALLOWED_TABLES:
             return False, f"Table '{table}' is not in the allowed list."
 
@@ -213,6 +208,13 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
         return False, "Query must filter on TENANT_ID = :tenant_id for data security."
 
     return True, ""
+
+
+def _inject_safety_cap(sql: str, cap: int = MAX_ROW_SAFETY_CAP) -> str:
+    """Inject safety cap LIMIT only if the query has no LIMIT already."""
+    if re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
+        return sql
+    return f"{sql.rstrip(';').rstrip()}\nLIMIT {cap};"
 
 
 def _get_row_count(sql: str) -> int | None:
