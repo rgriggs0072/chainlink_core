@@ -199,8 +199,13 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
         if re.search(rf'\b{keyword}\b', sql_upper):
             return False, f"Query contains disallowed keyword: {keyword}"
 
+    # Extract CTE names so we don't flag them as unknown tables
+    cte_names = set(re.findall(r'\b(\w+)\s+AS\s*\(', sql_upper))
+
     table_refs = re.findall(r'(?:FROM|JOIN)\s+([A-Z_][A-Z0-9_]*)', sql_upper)
     for table in table_refs:
+        if table in cte_names:
+            continue  # CTE alias — not a real table
         if table not in ALLOWED_TABLES:
             return False, f"Table '{table}' is not in the allowed list."
 
