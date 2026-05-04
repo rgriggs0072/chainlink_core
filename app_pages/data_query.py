@@ -285,6 +285,7 @@ def render():
     with st.expander("💡 Example questions", expanded=not st.session_state.get("dq_question")):
         for q in EXAMPLE_QUESTIONS:
             if st.button(q, key=f"example_{q[:30]}"):
+                st.session_state["dq_input"] = q  # ← update the text input key directly
                 st.session_state["dq_question"] = q
                 st.session_state.pop("dq_result", None)
                 st.session_state.pop("dq_sql", None)
