@@ -80,8 +80,10 @@ TABLE ALIASES — always use these short aliases:
   SR = SALES_REPORT
 
 CUSTOMERS (alias: C):
-  CUSTOMER_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME, ADDRESS, CITY, STATE,
-  COUNTY, SALESPERSON, PHONE_NUMBER, ACCOUNT_STATUS ('ACTIVE'/'INACTIVE'), TENANT_ID
+  CUSTOMER_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME, ADDRESS, CITY,
+  COUNTY, SALESPERSON, ACCOUNT_STATUS ('ACTIVE'/'INACTIVE'),
+  TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+  NOTE: There is NO STATE column in CUSTOMERS. Do not reference C.STATE.
   IMPORTANT — the exact CHAIN_NAME values in this database are: {chains_str}
   Always match chain names exactly as listed above.
 
@@ -89,26 +91,32 @@ DISTRO_GRID (alias: DG):
   DISTRO_GRID_ID, TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME,
   STORE_NUMBER, COUNTY, PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
   SEGMENT, YES_NO (1=active placement, 0=inactive), ACTIVATION_STATUS,
-  LAST_LOAD_DATE
-  Join to CUSTOMERS on CUSTOMER_ID. Join to PRODUCTS on PRODUCT_ID.
-  IMPORTANT: COUNTY stores the string 'None' (not SQL NULL) when no county
+  CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+  DENORMALIZATION NOTE: DISTRO_GRID already contains CHAIN_NAME, STORE_NAME,
+  STORE_NUMBER, COUNTY, and PRODUCT_NAME — joins back to CUSTOMERS or PRODUCTS
+  are only needed for columns NOT present in DISTRO_GRID (e.g. SALESPERSON,
+  ACCOUNT_STATUS, SUPPLIER, PACKAGE).
+  COUNTY NOTE: COUNTY stores the string 'None' (not SQL NULL) when no county
   is assigned. Always filter empty counties with:
   AND UPPER(TRIM(DG.COUNTY)) != 'NONE'
   Do NOT use IS NOT NULL for county filtering on this table.
 
 PRODUCTS (alias: P):
   PRODUCT_ID, SUPPLIER, PRODUCT_NAME, PACKAGE, CARRIER_UPC,
-  PRODUCT_MANAGER, TENANT_ID
+  PRODUCT_MANAGER, TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
   Join to DISTRO_GRID on PRODUCT_ID. Join to SUPPLIER_COUNTY on SUPPLIER.
 
 SUPPLIER_COUNTY (alias: SC):
-  SUPPLIER, COUNTY, STATUS ('Yes'=approved, 'No'=not approved), TENANT_ID
+  SUPPLIER, COUNTY, STATUS ('Yes'=approved to sell, 'No'=not approved),
+  TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+  NOTE: STATUS is mixed case ('Yes'/'No') — not all caps.
   Join to PRODUCTS on SUPPLIER. Join to CUSTOMERS on COUNTY.
 
 RESET_SCHEDULE (alias: RS):
   RESET_SCHEDULE_ID, CHAIN_NAME, STORE_NUMBER, STORE_NAME, PHONE_NUMBER,
   CITY, ADDRESS, STATE, COUNTY, TEAM_LEAD, RESET_DATE, RESET_TIME,
-  STATUS, NOTES, TENANT_ID
+  STATUS, NOTES, TENANT_ID, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
+  NOTE: STATE exists in RESET_SCHEDULE but NOT in CUSTOMERS.
   Join to CUSTOMERS on STORE_NUMBER and CHAIN_NAME.
 
 SALES_REPORT (alias: SR):
@@ -117,7 +125,12 @@ SALES_REPORT (alias: SR):
 
 KEY RELATIONSHIPS:
   CUSTOMERS → DISTRO_GRID:     JOIN C ON DG.CUSTOMER_ID = C.CUSTOMER_ID
+                                (only needed for SALESPERSON, ACCOUNT_STATUS,
+                                ADDRESS, CITY — DG already has CHAIN_NAME,
+                                STORE_NAME, STORE_NUMBER, COUNTY)
   PRODUCTS  → DISTRO_GRID:     JOIN P ON DG.PRODUCT_ID  = P.PRODUCT_ID
+                                (only needed for SUPPLIER, PACKAGE,
+                                CARRIER_UPC, PRODUCT_MANAGER)
   PRODUCTS  → SUPPLIER_COUNTY: JOIN SC ON P.SUPPLIER    = SC.SUPPLIER
   CUSTOMERS → SUPPLIER_COUNTY: JOIN SC ON C.COUNTY      = SC.COUNTY
   CUSTOMERS → RESET_SCHEDULE:  JOIN RS ON C.STORE_NUMBER = RS.STORE_NUMBER
@@ -148,8 +161,9 @@ STRICT RULES:
 9. Always use UPPER_CASE for all column and table names.
 10. Always terminate the query with a semicolon (;).
 11. Never use f-strings or string formatting — only bound parameters (:tenant_id).
-12. Return ONLY the raw SQL query with no explanation, no markdown, no backticks, no preamble.
-13. If the question cannot be answered with the available tables, respond with exactly: CANNOT_ANSWER
+12. Never invent column names — only use columns listed in the schema below.
+13. Return ONLY the raw SQL query with no explanation, no markdown, no backticks, no preamble.
+14. If the question cannot be answered with the available tables, respond with exactly: CANNOT_ANSWER
 
 {schema_context}"""
 
@@ -197,10 +211,7 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
 
 
 def _inject_safety_cap(sql: str, cap: int = MAX_ROW_SAFETY_CAP) -> str:
-    """
-    Inject safety cap LIMIT only if the query has no LIMIT already.
-    Preserves user-requested LIMIT (e.g. 'first 5 rows').
-    """
+    """Inject safety cap LIMIT only if the query has no LIMIT already."""
     if re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
         return sql
     return f"{sql.rstrip(';').rstrip()}\nLIMIT {cap};"
@@ -285,7 +296,7 @@ def render():
     with st.expander("💡 Example questions", expanded=not st.session_state.get("dq_question")):
         for q in EXAMPLE_QUESTIONS:
             if st.button(q, key=f"example_{q[:30]}"):
-                st.session_state["dq_input"] = q  # ← update the text input key directly
+                st.session_state["dq_input"] = q
                 st.session_state["dq_question"] = q
                 st.session_state.pop("dq_result", None)
                 st.session_state.pop("dq_sql", None)
@@ -305,7 +316,7 @@ def render():
     with col_clear:
         if st.button("✕ Clear", type="secondary", use_container_width=True):
             for key in ["dq_question", "dq_result", "dq_sql",
-                        "dq_row_count", "dq_capped"]:
+                        "dq_row_count", "dq_capped", "dq_input"]:
                 st.session_state.pop(key, None)
             st.rerun()
 
