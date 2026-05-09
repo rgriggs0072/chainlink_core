@@ -10,24 +10,79 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > Work in progress on `dev` branch. Move items here to the next version block on release.
 
 ### New Features
-- 
+- None
 
 ### Bug Fixes
-- 
+- None
 
 ### UI Changes
-- 
+- None
 
 ### Snowflake / DB Changes
-- 
+- None
 
 ### Breaking Changes
-- 
+- None
 
 ### Backlog / Known Issues
 - Add formatter validation for YES_NO column — block upload if column is empty, block if no rows have YES_NO = 1, block if any values are not 0 or 1. Silent conversion of empty to 0 during sanitization was masking bad uploads (discovered during v1.2.0 CVS rebuild)
 - Add formatter validation for SKU column — warn and default to 0 if SKU column is empty or contains non-numeric values. Currently sanitization silently fills with 0 without warning
 - Add formatter validation to catch SKU values with incorrect digit count — e.g. removing a digit from a valid SKU should be flagged
+
+### Release Process Tasks
+- **Keep `version.txt` in sync with `CHANGELOG.md`** — whenever `[Unreleased]` is promoted to a new version block (e.g. `[vX.X.X] — YYYY-MM-DD`), also update `E:\Development\chainlink_core\version.txt` so its single-line version string matches the new release version exactly (e.g. `v1.4.0`). Both files must be committed together as part of the release commit (`chore: release vX.X.X`)
+
+---
+
+## [v1.3.1] — 2026-05-09
+
+### New Features
+- None
+
+### Bug Fixes
+- Fix AI Data Query failing on SALES_REPORT queries with `invalid identifier 'SR.COUNTY'` — COUNTY does not exist in SALES_REPORT; removed from schema context and added explicit warning to prevent Claude from referencing it
+- Fix AI Data Query CTE validator incorrectly flagging CTE alias names (e.g. `SAFEWAY_STORES`) as unknown tables — validator now extracts CTE names and skips them during table validation
+
+### UI Changes
+- None
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
+
+## [v1.3.0] — 2026-05-05
+
+### New Features
+- AI Data Query: full schema context added to AI prompt — all 6 tables (CUSTOMERS, DISTRO_GRID, PRODUCTS, SUPPLIER_COUNTY, RESET_SCHEDULE, SALES_REPORT) now include complete column lists, TENANT_ID fields, table aliases (C/DG/P/SC/RS/SR), and explicit JOIN relationships
+- AI Data Query: TENANT_ID scoping enforced end-to-end — AI prompt mandates `TENANT_ID = :tenant_id` on every table; `_run_query()` injects tenant from session state as a string replacement; validates tenant_id present before executing any query
+- AI Data Query: row count check before fetch — runs a `COUNT(*)` wrapper before executing the full query; shows the user exactly how many rows will be returned and warns if the 200K safety cap will be hit
+- AI Data Query: user-requested LIMIT support — if the question includes "first 5", "top 10", "limit to N", the AI includes LIMIT in the generated SQL and the automatic safety cap is not injected on top of it
+- AI Data Query: safety cap raised from 500 to 200,000 rows — `MAX_ROW_SAFETY_CAP = 200000`
+- AI Data Query: CTE support — AI prompt now instructs Claude to use `WITH` CTEs for any multi-step or multi-table logic; validator updated to recognize CTE aliases as valid table references
+
+### Bug Fixes
+- Fix AI Data Query validator falsely blocking CTE queries — `_validate_sql()` was treating CTE alias names (e.g. `cte_base`) as unknown tables; now extracts CTE names via regex before the allowed-table check and skips them
+- Fix `_inject_safety_cap` missing after intermediate refactor — function was accidentally removed during the row-count rewrite; restored in follow-up commit
+- Fix AI generating queries with `C.STATE` against CUSTOMERS — CUSTOMERS has no STATE column; schema prompt now explicitly notes STATE exists only in RESET_SCHEDULE
+- Fix Clear button leaving `dq_input` stale in session state — Clear now also pops `dq_input` so the text field resets cleanly on rerun
+
+### UI Changes
+- Run/Clear buttons are now equal-width, side-by-side, and full-container-width with clearer labels (▶ Run Query / ✕ Clear)
+- Results banner now shows exact row count with a "capped" note when the safety cap truncated results; shows full count when all rows are returned
+- Example questions expander auto-collapses once a question is active
+- Page subtitle updated to "Queries are read-only and tenant-scoped" (was "limited to 500 rows")
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
 
 ## [v1.2.0] — 2026-04-20
 
