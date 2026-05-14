@@ -13,7 +13,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - None
 
 ### Bug Fixes
-- None
+- Fix Customers, Products, and Sales Report uploads failing with `NP.INT64` SQL error after pandas 2.x upgrade — explicit `int()` and `str()` casts added to all `executemany` record builders in `write_customers_to_snowflake()`, `write_products_to_snowflake()`, and `write_salesreport_to_snowflake()` to convert numpy types to native Python types before passing to Snowflake connector
 
 ### UI Changes
 - None

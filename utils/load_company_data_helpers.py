@@ -1223,6 +1223,7 @@ def write_salesreport_to_snowflake(df: pd.DataFrame) -> None:
 
     df = df.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.where(pd.notna(df), None)
 
     # Defensive cleaning
     if "UPC" in df.columns:
@@ -1382,6 +1383,7 @@ def write_customers_to_snowflake(df: pd.DataFrame) -> None:
 
     df = df.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
+    df = df.where(pd.notna(df), None)
 
     conn, cursor, tenant_id = _get_conn_and_cursor()
     if not conn or not cursor or not tenant_id:
@@ -1416,15 +1418,15 @@ def write_customers_to_snowflake(df: pd.DataFrame) -> None:
             """,
             [
                 (
-                    r.CUSTOMER_ID,
-                    r.CHAIN_NAME,
-                    r.STORE_NUMBER,
-                    r.STORE_NAME,
-                    r.ADDRESS,
-                    r.CITY,
-                    r.COUNTY,
-                    r.SALESPERSON,
-                    r.ACCOUNT_STATUS,
+                    int(r.CUSTOMER_ID) if r.CUSTOMER_ID is not None else None,
+                    str(r.CHAIN_NAME) if r.CHAIN_NAME is not None else None,
+                    int(r.STORE_NUMBER) if r.STORE_NUMBER is not None else None,
+                    str(r.STORE_NAME) if r.STORE_NAME is not None else None,
+                    str(r.ADDRESS) if r.ADDRESS is not None else None,
+                    str(r.CITY) if r.CITY is not None else None,
+                    str(r.COUNTY) if r.COUNTY is not None else None,
+                    str(r.SALESPERSON) if r.SALESPERSON is not None else None,
+                    str(r.ACCOUNT_STATUS) if r.ACCOUNT_STATUS is not None else None,
                 )
                 for r in df.itertuples(index=False)
             ],
@@ -1511,12 +1513,12 @@ def write_products_to_snowflake(df: pd.DataFrame) -> None:
             """,
             [
                 (
-                    r.PRODUCT_ID,
-                    r.SUPPLIER,
-                    r.PRODUCT_NAME,
-                    r.PACKAGE,
-                    r.CARRIER_UPC,
-                    r.PRODUCT_MANAGER,
+                    int(r.PRODUCT_ID) if r.PRODUCT_ID is not None else None,
+                    str(r.SUPPLIER) if r.SUPPLIER is not None else None,
+                    str(r.PRODUCT_NAME) if r.PRODUCT_NAME is not None else None,
+                    str(r.PACKAGE) if r.PACKAGE is not None else None,
+                    str(r.CARRIER_UPC) if r.CARRIER_UPC is not None else None,
+                    str(r.PRODUCT_MANAGER) if r.PRODUCT_MANAGER is not None else None,
                 )
                 for r in df.itertuples(index=False)
             ],
