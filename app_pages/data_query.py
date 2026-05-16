@@ -4,16 +4,16 @@ AI-Powered Data Query Page (Admin Only)
 
 Overview:
 - Allows admins to query Snowflake tables using plain English.
-- Claude API generates a safe SELECT query from the natural language input.
-- Chain names are loaded dynamically from CUSTOMERS at page load so the AI
-  always knows the exact values — no hardcoding needed.
+- Claude API classifies intent (LOOKUP/ANALYSIS/DIAGNOSTIC), extracts supplier names,
+  and generates a safe SELECT query (DIAGNOSTIC skips SQL entirely).
 - Query is validated (SELECT only, allowed tables only, TENANT_ID required)
   before execution.
 - Row count is checked before fetching — warns if results exceed safety cap.
-- Results shown in st.dataframe with SQL visible in an expander.
+- When a query returns 0 rows for an ANALYSIS question, utils.diagnostics
+  runs a SQL check sequence and reports the root cause in plain English.
+- LOOKUP zero-row results are reported cleanly without triggering diagnostics.
 - Safety cap of 200K rows prevents runaway queries on large tables.
 - Always uses cached st.session_state["conn"] — never opens a new connection.
-- Always injects TENANT_ID from st.session_state as a bound parameter.
 
 Allowed tables: CUSTOMERS, DISTRO_GRID, RESET_SCHEDULE,
                 SALES_REPORT, PRODUCTS, SUPPLIER_COUNTY
@@ -37,7 +37,12 @@ ALLOWED_TABLES = {
     "SALES_REPORT",
     "PRODUCTS",
     "SUPPLIER_COUNTY",
+    "GAP_REPORT_TMP",
+    "GAP_REPORT_TMP2",
 }
+
+# Gap tables are per-tenant databases — no TENANT_ID column exists in these tables
+GAP_TABLES = {"GAP_REPORT_TMP", "GAP_REPORT_TMP2"}
 
 # Safety cap — prevents runaway queries on large tables like DISTRO_GRID (100K+)
 MAX_ROW_SAFETY_CAP = 200000
@@ -119,7 +124,7 @@ RESET_SCHEDULE (alias: RS):
   NOTE: STATE exists in RESET_SCHEDULE but NOT in CUSTOMERS.
   Join to CUSTOMERS on STORE_NUMBER and CHAIN_NAME.
 
-SSALES_REPORT (alias: SR):
+SALES_REPORT (alias: SR):
   STORE_NUMBER, STORE_NAME, ADDRESS, CHAIN_NAME, UPC, PRODUCT_NAME,
   SALESPERSON, PURCHASED_YES_NO, SALE_DATE, TENANT_ID,
   CREATED_AT, LAST_LOAD_DATE
@@ -137,17 +142,159 @@ KEY RELATIONSHIPS:
   CUSTOMERS → SUPPLIER_COUNTY: JOIN SC ON C.COUNTY      = SC.COUNTY
   CUSTOMERS → RESET_SCHEDULE:  JOIN RS ON C.STORE_NUMBER = RS.STORE_NUMBER
                                         AND C.CHAIN_NAME  = RS.CHAIN_NAME
+
+## GAP REPORT TABLES — ALWAYS USE THESE FOR GAP ANALYSIS
+
+Two pre-built tables exist for gap reporting. NEVER rebuild gap logic from
+the raw tables (DISTRO_GRID, SALES_REPORT, SUPPLIER_COUNTY, PRODUCTS).
+All business rules are already applied by a stored procedure.
+
+TABLE: GAP_REPORT_TMP
+Use for: gap analysis, distribution gaps, missing placements, purchased vs not purchased
+Columns: CHAIN_NAME, STORE_NAME, STORE_NUMBER, ADDRESS, CITY, COUNTY, SUPPLIER,
+         PRODUCT_NAME, SALESPERSON, "dg_upc", "sr_upc", "In_Schematic", PURCHASED_YES_NO
+
+TABLE: GAP_REPORT_TMP2
+Use for: gap analysis that also involves reset schedules or upcoming store visits
+Adds to GAP_REPORT_TMP: RESET_DATE, RESET_TIME, sc_STATUS
+
+CRITICAL RULES FOR THESE TABLES:
+- Do NOT add WHERE TENANT_ID = :tenant_id — these tables have NO TENANT_ID column; adding one returns zero rows
+- Always quote mixed-case columns exactly: "dg_upc", "sr_upc", "In_Schematic"
+- PURCHASED_YES_NO = 1 means the store HAS purchased the product (NOT a gap)
+- PURCHASED_YES_NO = 0 or NULL means the store has NOT purchased it (IS a gap)
+- In_Schematic is always 1 in these tables — do not filter on it
+- When to use which: gap/placement/purchase question → GAP_REPORT_TMP; mentions resets/upcoming dates → GAP_REPORT_TMP2
+- Never use raw DISTRO_GRID + SALES_REPORT join for gap analysis
+
+GAP QUERY PATTERNS:
+
+-- All gaps for a supplier (not purchased):
+SELECT CHAIN_NAME, STORE_NAME, STORE_NUMBER, COUNTY, SALESPERSON,
+       PRODUCT_NAME, "dg_upc", PURCHASED_YES_NO
+FROM GAP_REPORT_TMP
+WHERE UPPER(TRIM(SUPPLIER)) = UPPER(TRIM('<supplier_name>'))
+  AND (PURCHASED_YES_NO = 0 OR PURCHASED_YES_NO IS NULL)
+ORDER BY CHAIN_NAME, COUNTY, STORE_NUMBER;
+
+-- Full gap report with gap status label:
+SELECT CHAIN_NAME, STORE_NAME, STORE_NUMBER, COUNTY, SALESPERSON,
+       PRODUCT_NAME, "dg_upc", PURCHASED_YES_NO,
+       CASE WHEN PURCHASED_YES_NO = 1 THEN 'NOT A GAP' ELSE 'GAP' END AS GAP_STATUS
+FROM GAP_REPORT_TMP
+WHERE UPPER(TRIM(SUPPLIER)) = UPPER(TRIM('<supplier_name>'))
+ORDER BY GAP_STATUS DESC, CHAIN_NAME, COUNTY, STORE_NUMBER;
+
+-- Gaps with upcoming reset dates:
+SELECT CHAIN_NAME, STORE_NAME, STORE_NUMBER, COUNTY, SALESPERSON,
+       SUPPLIER, PRODUCT_NAME, RESET_DATE, RESET_TIME,
+       CASE WHEN PURCHASED_YES_NO = 1 THEN 'NOT A GAP' ELSE 'GAP' END AS GAP_STATUS
+FROM GAP_REPORT_TMP2
+WHERE UPPER(TRIM(SUPPLIER)) = UPPER(TRIM('<supplier_name>'))
+  AND (PURCHASED_YES_NO = 0 OR PURCHASED_YES_NO IS NULL)
+ORDER BY RESET_DATE, CHAIN_NAME, STORE_NUMBER;
+
+-- Gap summary by salesperson:
+SELECT SALESPERSON,
+       COUNT(*) AS TOTAL_ELIGIBLE,
+       SUM(CASE WHEN PURCHASED_YES_NO = 1 THEN 1 ELSE 0 END) AS SOLD,
+       SUM(CASE WHEN PURCHASED_YES_NO != 1 OR PURCHASED_YES_NO IS NULL THEN 1 ELSE 0 END) AS GAPS
+FROM GAP_REPORT_TMP
+WHERE UPPER(TRIM(SUPPLIER)) = UPPER(TRIM('<supplier_name>'))
+GROUP BY SALESPERSON
+ORDER BY GAPS DESC;
+
+-- Gap summary by county:
+SELECT COUNTY,
+       COUNT(*) AS TOTAL_ELIGIBLE,
+       SUM(CASE WHEN PURCHASED_YES_NO = 1 THEN 1 ELSE 0 END) AS SOLD,
+       SUM(CASE WHEN PURCHASED_YES_NO != 1 OR PURCHASED_YES_NO IS NULL THEN 1 ELSE 0 END) AS GAPS
+FROM GAP_REPORT_TMP
+WHERE UPPER(TRIM(SUPPLIER)) = UPPER(TRIM('<supplier_name>'))
+GROUP BY COUNTY
+ORDER BY GAPS DESC;
 """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SQL generation
+# AI call + response parsing
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _generate_sql(question: str, schema_context: str) -> str:
+def _call_ai(question: str, schema_context: str) -> str:
+    """Call the Claude API. Returns the full response text including INTENT metadata."""
     client = anthropic.Anthropic(api_key=st.secrets["anthropic"]["api_key"])
 
-    system_prompt = f"""You are a Snowflake SQL expert. Generate a single valid Snowflake SQL SELECT query based on the user's question.
+    system_prompt = f"""You are a Snowflake SQL expert. Generate a valid Snowflake SQL SELECT query based on the user's question.
+
+First, classify the user's question:
+
+INTENT: LOOKUP      — user is checking whether something exists in a specific table
+INTENT: ANALYSIS    — user expects data to exist and wants insights, gaps, or reports
+INTENT: DIAGNOSTIC  — user is asking WHY something is missing or not showing (see below)
+
+Examples:
+  "Is Sunboy in the Supplier County table?"         → INTENT: LOOKUP
+  "Show me Sunboy entries in the Distro Grid"       → INTENT: LOOKUP
+  "Is Pacific Coast Seltzers an approved supplier?" → INTENT: LOOKUP
+  "Which stores are missing Sunboy from the grid?"  → INTENT: ANALYSIS
+  "Show me the gap report for Alameda county"       → INTENT: ANALYSIS
+
+## INTENT: DIAGNOSTIC — DO NOT WRITE SQL
+
+A third intent class exists for questions asking WHY something is missing,
+not showing, or not appearing in a report or analysis.
+
+INTENT: DIAGNOSTIC applies when the user asks:
+  "Why is X not showing in the gap report?"
+  "Why aren't X products appearing?"
+  "Why is X missing from the report?"
+  "Why can't I see X?"
+  "Why is X not in the distro grid?"
+  "Why doesn't X show up?"
+  "X is not showing — why?"
+
+CRITICAL RULES FOR DIAGNOSTIC INTENT:
+- Do NOT generate any SQL whatsoever
+- Do NOT attempt to investigate the data yourself
+- Do NOT write a UNION ALL or any other diagnostic query
+- Return ONLY the following two lines and nothing else:
+
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: <supplier name extracted from the question>
+
+If no supplier name can be extracted, return:
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: UNKNOWN
+
+The application handles all investigation automatically.
+Any SQL you generate for a DIAGNOSTIC question will be ignored and
+will produce incorrect results for the user.
+
+DIAGNOSTIC EXAMPLES:
+
+User: "Why is Sunboy not showing in the gap report?"
+Correct response:
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: Sunboy
+
+User: "Why aren't 2 Towns Ciderhouse products appearing?"
+Correct response:
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: 2 Towns Ciderhouse
+
+User: "Cascade Brewing is missing from my report, why?"
+Correct response:
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: Cascade Brewing
+
+User: "Why is my gap report empty?"
+Correct response:
+  INTENT: DIAGNOSTIC
+  EXTRACTED_SUPPLIER: UNKNOWN
+
+If the question names a specific supplier, brand, or manufacturer, include:
+EXTRACTED_SUPPLIER: <name>
+(Omit this line entirely if no supplier is mentioned.)
 
 STRICT RULES:
 1. Only generate SELECT statements — never INSERT, UPDATE, DELETE, DROP, CREATE, or any DDL/DML.
@@ -164,8 +311,16 @@ STRICT RULES:
 10. Always terminate the query with a semicolon (;).
 11. Never use f-strings or string formatting — only bound parameters (:tenant_id).
 12. Never invent column names — only use columns listed in the schema below.
-13. Return ONLY the raw SQL query with no explanation, no markdown, no backticks, no preamble.
-14. If the question cannot be answered with the available tables, respond with exactly: CANNOT_ANSWER
+13. Format your response as:
+    INTENT: <LOOKUP|ANALYSIS>
+    [EXTRACTED_SUPPLIER: <name>]
+    <raw SQL query starting with SELECT or WITH>
+    For DIAGNOSTIC intent, return ONLY:
+    INTENT: DIAGNOSTIC
+    EXTRACTED_SUPPLIER: <name or UNKNOWN>
+    If the question cannot be answered with SQL, respond with:
+    INTENT: UNKNOWN
+    CANNOT_ANSWER
 
 {schema_context}"""
 
@@ -183,6 +338,26 @@ STRICT RULES:
                 time.sleep(2 ** attempt)
                 continue
             raise
+
+
+def _extract_intent(ai_response: str) -> str:
+    """Returns 'LOOKUP', 'ANALYSIS', 'DIAGNOSTIC', or 'UNKNOWN'."""
+    match = re.search(r'INTENT:\s*(LOOKUP|ANALYSIS|DIAGNOSTIC)', ai_response, re.IGNORECASE)
+    return match.group(1).upper() if match else "UNKNOWN"
+
+
+def _extract_supplier(ai_response: str) -> str | None:
+    """Returns the extracted supplier name, or None if not present."""
+    match = re.search(r'EXTRACTED_SUPPLIER:\s*(.+)', ai_response)
+    return match.group(1).strip() if match else None
+
+
+def _extract_sql(ai_response: str) -> str:
+    """Extract the SQL query from a full AI response (strips INTENT/EXTRACTED_SUPPLIER lines)."""
+    match = re.search(r'((?:WITH|SELECT)\b.+)', ai_response, re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return ai_response.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,7 +386,11 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
         if table not in ALLOWED_TABLES:
             return False, f"Table '{table}' is not in the allowed list."
 
-    if ":tenant_id" not in sql.lower():
+    # Gap tables are per-tenant databases with no TENANT_ID column — skip the
+    # filter check only when the query touches exclusively gap tables.
+    actual_refs = {t for t in table_refs if t not in cte_names}
+    non_gap_refs = actual_refs - GAP_TABLES
+    if non_gap_refs and ":tenant_id" not in sql.lower():
         return False, "Query must filter on TENANT_ID = :tenant_id for data security."
 
     return True, ""
@@ -322,21 +501,23 @@ def render():
         run = st.button("▶ Run Query", type="primary", use_container_width=True)
     with col_clear:
         if st.button("✕ Clear", type="secondary", use_container_width=True):
-            for key in ["dq_question", "dq_result", "dq_sql",
-                        "dq_row_count", "dq_capped", "dq_input"]:
+            for key in ["dq_question", "dq_result", "dq_sql", "dq_row_count",
+                        "dq_capped", "dq_input", "dq_intent", "dq_supplier",
+                        "dq_diagnosis", "dq_diagnosis_counts"]:
                 st.session_state.pop(key, None)
             st.rerun()
 
     # ── Generate + run ────────────────────────────────────────────────────────
     if run and question.strip():
         st.session_state["dq_question"] = question
-        for key in ["dq_result", "dq_sql", "dq_row_count", "dq_capped"]:
+        for key in ["dq_result", "dq_sql", "dq_row_count", "dq_capped",
+                    "dq_intent", "dq_supplier", "dq_diagnosis", "dq_diagnosis_counts"]:
             st.session_state.pop(key, None)
 
-        # Step 1 — Generate SQL
+        # Step 1 — Call AI (returns full response with INTENT + SQL)
         with st.spinner("Generating query..."):
             try:
-                sql = _generate_sql(question, schema_context)
+                ai_response = _call_ai(question, schema_context)
             except anthropic.APIStatusError as e:
                 if e.status_code == 529:
                     st.warning("⏳ The AI service is currently busy. Please wait a moment and try again.")
@@ -347,63 +528,125 @@ def render():
                 st.error(f"❌ Failed to generate query: {e}")
                 return
 
-        if sql == "CANNOT_ANSWER":
-            st.warning(
-                "I couldn't find a way to answer that with the available data. "
-                "Try rephrasing or pick one of the example questions for ideas."
-            )
-            return
+        intent = _extract_intent(ai_response)
+        supplier = _extract_supplier(ai_response)
+        st.session_state["dq_intent"] = intent
+        st.session_state["dq_supplier"] = supplier
 
-        # Step 2 — Validate SQL
-        is_valid, error = _validate_sql(sql)
-        if not is_valid:
-            st.error(f"❌ Query validation failed: {error}")
-            with st.expander("🔎 View raw AI response"):
-                st.code(sql, language="sql")
-            return
+        if intent == "DIAGNOSTIC":
+            # Skip SQL entirely — hand off to diagnostic function
+            from utils.diagnostics import run_diagnostic
+            supplier_key = supplier if supplier and supplier.upper() != "UNKNOWN" else None
+            with st.spinner("Investigating..."):
+                diagnosis, counts = run_diagnostic(
+                    original_question=question,
+                    generated_sql=None,
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    extracted_supplier=supplier_key,
+                )
+            st.session_state["dq_diagnosis"] = diagnosis
+            st.session_state["dq_diagnosis_counts"] = counts
 
-        # Step 3 — Count rows (skip if query already has a user-requested LIMIT)
-        has_user_limit = bool(re.search(r'\bLIMIT\b', sql, re.IGNORECASE))
-        total_rows = None
-        capped = False
-
-        if not has_user_limit:
-            with st.spinner("Counting rows..."):
-                total_rows = _get_row_count(sql)
-
-            if total_rows is not None:
-                if total_rows > MAX_ROW_SAFETY_CAP:
-                    st.warning(
-                        f"⚠️ This query returns **{total_rows:,} rows** which exceeds the "
-                        f"**{MAX_ROW_SAFETY_CAP:,} row** safety cap. Results will be truncated."
-                    )
-                    capped = True
-                else:
-                    st.info(f"ℹ️ Query will return **{total_rows:,} rows** — fetching all.")
-
-        # Step 4 — Apply safety cap if needed and run
-        sql_final = _inject_safety_cap(sql) if not has_user_limit else sql
-        st.session_state["dq_sql"] = sql_final
-        st.session_state["dq_row_count"] = total_rows
-        st.session_state["dq_capped"] = capped
-
-        with st.spinner("Running query..."):
-            try:
-                df = _run_query(sql_final)
-                st.session_state["dq_result"] = df
-            except Exception as e:
-                st.error(f"❌ Query failed: {e}")
+        else:
+            # LOOKUP or ANALYSIS — extract and run SQL
+            if "CANNOT_ANSWER" in ai_response.upper():
+                st.warning(
+                    "I couldn't find a way to answer that with the available data. "
+                    "Try rephrasing or pick one of the example questions for ideas."
+                )
                 return
+
+            sql = _extract_sql(ai_response)
+
+            # Step 2 — Validate SQL
+            is_valid, error = _validate_sql(sql)
+            if not is_valid:
+                st.error(f"❌ Query validation failed: {error}")
+                with st.expander("🔎 View raw AI response"):
+                    st.code(ai_response, language="sql")
+                return
+
+            # Step 3 — Count rows (skip if query already has a user-requested LIMIT)
+            has_user_limit = bool(re.search(r'\bLIMIT\b', sql, re.IGNORECASE))
+            total_rows = None
+            capped = False
+
+            if not has_user_limit:
+                with st.spinner("Counting rows..."):
+                    total_rows = _get_row_count(sql)
+
+                if total_rows is not None:
+                    if total_rows > MAX_ROW_SAFETY_CAP:
+                        st.warning(
+                            f"⚠️ This query returns **{total_rows:,} rows** which exceeds the "
+                            f"**{MAX_ROW_SAFETY_CAP:,} row** safety cap. Results will be truncated."
+                        )
+                        capped = True
+                    else:
+                        st.info(f"ℹ️ Query will return **{total_rows:,} rows** — fetching all.")
+
+            # Step 4 — Apply safety cap if needed and run
+            sql_final = _inject_safety_cap(sql) if not has_user_limit else sql
+            st.session_state["dq_sql"] = sql_final
+            st.session_state["dq_row_count"] = total_rows
+            st.session_state["dq_capped"] = capped
+
+            with st.spinner("Running query..."):
+                try:
+                    df = _run_query(sql_final)
+                    st.session_state["dq_result"] = df
+                except Exception as e:
+                    st.error(f"❌ Query failed: {e}")
+                    return
+
+            # Step 5 — Diagnostic on 0 rows (ANALYSIS intent only)
+            if df.empty and intent != "LOOKUP":
+                from utils.diagnostics import run_diagnostic
+                with st.spinner("Investigating why no results were found..."):
+                    diagnosis, counts = run_diagnostic(
+                        original_question=question,
+                        generated_sql=sql_final,
+                        conn=conn,
+                        tenant_id=tenant_id,
+                        extracted_supplier=supplier,
+                    )
+                st.session_state["dq_diagnosis"] = diagnosis
+                st.session_state["dq_diagnosis_counts"] = counts
 
     # ── Results ───────────────────────────────────────────────────────────────
     df = st.session_state.get("dq_result")
     sql_used = st.session_state.get("dq_sql")
     total_rows = st.session_state.get("dq_row_count")
     capped = st.session_state.get("dq_capped", False)
+    intent = st.session_state.get("dq_intent", "UNKNOWN")
+    diagnosis = st.session_state.get("dq_diagnosis")
 
-    if df is not None:
+    counts = st.session_state.get("dq_diagnosis_counts", {})
+    supplier_name = st.session_state.get("dq_supplier") or "this supplier"
+
+    if intent == "DIAGNOSTIC" and diagnosis is not None:
+        st.warning("**Diagnostic Results**")
+        if counts:
+            from utils.diagnostics import build_narrative
+            st.markdown(build_narrative(supplier_name, counts))
+        else:
+            st.markdown(diagnosis)
+
+    elif df is not None:
         if df.empty:
-            st.info("Query ran successfully but returned no results.")
+            if intent == "LOOKUP":
+                st.info("✅ Query ran successfully. **No records found** matching your criteria.")
+            elif diagnosis:
+                st.info("ℹ️ Query returned no results.")
+                st.warning("**Why did this return no results?**")
+                if counts:
+                    from utils.diagnostics import build_narrative
+                    st.markdown(build_narrative(supplier_name, counts))
+                else:
+                    st.markdown(diagnosis)
+            else:
+                st.info("ℹ️ Query returned no results.")
         else:
             if capped:
                 st.success(
