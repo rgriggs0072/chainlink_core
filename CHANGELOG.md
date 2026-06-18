@@ -29,7 +29,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.6.3] — 2026-06-17
 
 ### New Features
-- Add `.python-version` file pinned to `3.11` — belt-and-suspenders Python version pin for Streamlit Cloud alongside `.python-version`
+- Add `load_chain_stores(conn, tenant_id, chain_name)` to `utils/load_company_data_helpers.py` — queries CUSTOMERS for active stores of a chain and returns `{STORE_NUMBER: STORE_NAME}` dict; STORE_NUMBER normalized to string for type-safe comparison; always scoped to TENANT_ID
+- Add `validate_and_enrich_chain_file(df, selected_chain, chain_store_lookup)` to `utils/load_company_data_helpers.py` — shared validation + enrichment used by both Distro Grid and Reset Schedule upload flows; checks: STORE_NUMBER column present, CHAIN_NAME matches dropdown or is auto-added, every STORE_NUMBER exists in CUSTOMERS for the selected chain, STORE_NAME auto-populated from CUSTOMERS lookup if column is absent
+- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Distro Grid uploader (`app_pages/distro_grid_sections.py`) — runs after existing CHAIN_NAME validation, before `upload_distro_grid_to_snowflake()`; blocks upload and surfaces per-issue error messages on failure
+- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Reset Schedule uploader (`app_pages/reset_schedule_sections.py`) — runs after existing chain mismatch check, before `upload_reset_data()`; identical error behavior
+- Add `check_duplicate_store_numbers()` to `utils/load_company_data_helpers.py` — detects CHAIN_NAME + STORE_NUMBER combinations that resolve to different physical locations (different ADDRESS or CITY) in the upload file before any Snowflake write is attempted
+- Add `fetch_duplicate_stores()` to `utils/ai_insights.py` — queries the live CUSTOMERS table per tenant for existing duplicate store number records (ACCOUNT_STATUS = 'ACTIVE' only); results are injected into the "What Claude Noticed" AI prompt as data integrity warnings
+- "What Claude Noticed" panel now surfaces existing duplicate store number records as ⚠️ warnings with standard language: "[CHAIN] has [N] locations with store number [STORE_NUMBER] — resolve in source application before the next data upload"
+- Add `.python-version` file pinned to `3.11` — belt-and-suspenders Python version pin for Streamlit Cloud
 
 ### Bug Fixes
 - Fix UPC leading zeros stripped by Excel before upload — `format_uploaded_grid()` in `utils/distro_grid/formatters.py` now applies `zfill(11)` after converting float-encoded UPCs to int, preserving leading zeros before the value reaches the VARCHAR(20) Snowflake column
@@ -39,53 +46,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Fix `validate_contacts_before_send()` crashing entire gap email send on SQL error — call is now wrapped in `try/except Exception: missing_contacts = []` in `send_gap_history_pdfs()` so a SQL failure (missing column, permissions) degrades gracefully instead of aborting all emails
 
 ### UI Changes
-- None
-
-### Snowflake / DB Changes
-- None
-
-### Breaking Changes
-- None
-
----
-
-## [v1.6.2] — 2026-06-17
-
-### New Features
-- Add `load_chain_stores(conn, tenant_id, chain_name)` to `utils/load_company_data_helpers.py` — queries CUSTOMERS for active stores of a chain and returns `{STORE_NUMBER: STORE_NAME}` dict; STORE_NUMBER normalized to string for type-safe comparison; always scoped to TENANT_ID
-- Add `validate_and_enrich_chain_file(df, selected_chain, chain_store_lookup)` to `utils/load_company_data_helpers.py` — shared validation + enrichment used by both Distro Grid and Reset Schedule upload flows; checks: STORE_NUMBER column present, CHAIN_NAME matches dropdown or is auto-added, every STORE_NUMBER exists in CUSTOMERS for the selected chain, STORE_NAME auto-populated from CUSTOMERS lookup if column is absent
-- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Distro Grid uploader (`app_pages/distro_grid_sections.py`) — runs after existing CHAIN_NAME validation, before `upload_distro_grid_to_snowflake()`; blocks upload and surfaces per-issue error messages on failure
-- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Reset Schedule uploader (`app_pages/reset_schedule_sections.py`) — runs after existing chain mismatch check, before `upload_reset_data()`; identical error behavior
-
-### Bug Fixes
-- None
-
-### UI Changes
-- Distro Grid and Reset Schedule upload pages now hard-stop with `⛔ Upload Blocked` banner listing specific store numbers not found in CUSTOMERS, preventing silent data quality issues downstream
-- Both pages auto-populate CHAIN_NAME from the dropdown if the column is absent in the uploaded file, and auto-populate STORE_NAME from CUSTOMERS if the column is absent — no manual column addition required
-
-### Snowflake / DB Changes
-- New read-only query against CUSTOMERS on each upload: `SELECT STORE_NUMBER, STORE_NAME WHERE TENANT_ID = ? AND CHAIN_NAME = ? AND ACCOUNT_STATUS = 'ACTIVE'`; no schema changes required
-
-### Breaking Changes
-- None
-
----
-
-## [v1.6.1] — 2026-06-12
-
-### New Features
-- Add `check_duplicate_store_numbers()` to `utils/load_company_data_helpers.py` — detects CHAIN_NAME + STORE_NUMBER combinations that resolve to different physical locations (different ADDRESS or CITY) in the upload file before any Snowflake write is attempted
-- Add `fetch_duplicate_stores()` to `utils/ai_insights.py` — queries the live CUSTOMERS table per tenant for existing duplicate store number records (ACCOUNT_STATUS = 'ACTIVE' only); results are injected into the "What Claude Noticed" AI prompt as data integrity warnings
-- "What Claude Noticed" panel now surfaces existing duplicate store number records as ⚠️ warnings with standard language: "[CHAIN] has [N] locations with store number [STORE_NUMBER] — resolve in source application before the next data upload"
-
-### Bug Fixes
-- None
-
-### UI Changes
 - Customers upload page now blocks upload with a `⛔ Upload Blocked — Duplicate Store Numbers Detected` banner and per-store expandable panels showing each conflicting address, city, and rep when duplicates are found in the upload file; upload button is suppressed until the source data is corrected
+- Distro Grid and Reset Schedule upload pages now hard-stop with `⛔ Upload Blocked` banner listing specific store numbers not found in CUSTOMERS, preventing silent data quality issues downstream
+- Both Distro Grid and Reset Schedule pages auto-populate CHAIN_NAME from the dropdown if the column is absent in the uploaded file, and auto-populate STORE_NAME from CUSTOMERS if the column is absent — no manual column addition required
+- Disable Predictive Purchases and Predictive Truck Plan tabs with "Coming Soon" treatment via `COMING_SOON_TABS` constant — hidden until underlying data pipeline is ready; prevents client confusion over incomplete features; re-enable is a one-line change
 
 ### Snowflake / DB Changes
+- New read-only query against CUSTOMERS on each Distro Grid and Reset Schedule upload: `SELECT STORE_NUMBER, STORE_NAME WHERE TENANT_ID = ? AND CHAIN_NAME = ? AND ACCOUNT_STATUS = 'ACTIVE'`; no schema changes required
 - New read-only `HAVING COUNT(*) > 1` query against CUSTOMERS at session load time — grouped by CHAIN_NAME + STORE_NUMBER, scoped to TENANT_ID and ACCOUNT_STATUS = 'ACTIVE'; no schema changes required
 
 ### Breaking Changes
