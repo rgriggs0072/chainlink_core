@@ -10,6 +10,7 @@ underlying PRODUCTS data quality is confirmed clean.
 """
 
 import time
+from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
@@ -156,22 +157,27 @@ def render() -> None:
     # ------------------------------------------------------------------
     # 3. Summary stats
     # ------------------------------------------------------------------
-    total_products  = len(results_df)
-    check_ok_count  = results_df["CHECK_DIGIT_OK"].sum()
-    check_bad_count = total_products - check_ok_count
-    off_found       = results_df["OFF_FOUND"].eq(True).sum()
-    off_not_found   = results_df["OFF_FOUND"].eq(False).sum()
-    off_error       = results_df["OFF_FOUND"].isna().sum()
+    total_products   = len(results_df)
+    blank_upc_count  = results_df["NORMALIZED_UPC"].eq("").sum()
+    valid_upc_count  = results_df["CHECK_DIGIT_OK"].eq(True).sum()
+    corrected_count  = (
+        results_df["CHECK_DIGIT_OK"].eq(True)
+        & (results_df["UPC_12"] != results_df["RAW_UPC"])
+        & results_df["NORMALIZED_UPC"].ne("")
+    ).sum()
+    off_found        = results_df["OFF_FOUND"].eq(True).sum()
+    off_not_found    = results_df["OFF_FOUND"].eq(False).sum()
+    off_error        = results_df["OFF_FOUND"].isna().sum()
 
     st.markdown("---")
     st.subheader("Summary")
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Products",   total_products)
-    c2.metric("Check Digit ✅",   int(check_ok_count))
-    c3.metric("Check Digit ❌",   int(check_bad_count))
-    c4.metric("Found on OFF ✅",  int(off_found))
-    c5.metric("Not on OFF ❌",    int(off_not_found))
+    c1.metric("Total Products",           total_products)
+    c2.metric("Valid UPCs (no changes)",  int(valid_upc_count - corrected_count))
+    c3.metric("Check Digit Corrected",    int(corrected_count))
+    c4.metric("Not Found on OFF",         int(off_not_found))
+    c5.metric("Blank / Null UPC",         int(blank_upc_count))
 
     if off_error:
         st.warning(f"{off_error} product(s) returned an API error — see OFF_FOUND = None rows.")
@@ -183,20 +189,32 @@ def render() -> None:
     st.subheader("Results")
 
     # Highlight problem rows for quick scanning
-    problem_df = results_df[~results_df["CHECK_DIGIT_OK"] | ~results_df["OFF_FOUND"].eq(True)]
+    problem_df = results_df[
+        ~results_df["CHECK_DIGIT_OK"]
+        | ~results_df["OFF_FOUND"].eq(True)
+        | results_df["NORMALIZED_UPC"].eq("")
+    ]
     if not problem_df.empty:
-        with st.expander(f"⚠️ {len(problem_df)} problem rows (bad check digit or not on OFF)", expanded=True):
+        with st.expander(f"⚠️ {len(problem_df)} problem rows (bad check digit, not on OFF, or blank UPC)", expanded=True):
             st.dataframe(problem_df, width="stretch", hide_index=True)
 
     st.dataframe(results_df, width="stretch", hide_index=True)
 
     # ------------------------------------------------------------------
-    # 5. Download
+    # 5. Downloads
     # ------------------------------------------------------------------
-    st.download_button(
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
         label="📥 Download Full Results (Excel)",
         data=_to_excel(results_df),
-        file_name="upc_validation_results.xlsx",
+        file_name=f"upc_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+    dl2.download_button(
+        label="⬇️ Download Results as CSV",
+        data=results_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"upc_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
         width="stretch",
     )
