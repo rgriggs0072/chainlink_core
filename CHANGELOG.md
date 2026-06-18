@@ -29,11 +29,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.6.3] — 2026-06-17
 
 ### New Features
-- None
+- Add `.python-version` file pinned to `3.11` — belt-and-suspenders Python version pin for Streamlit Cloud alongside `.python-version`
 
 ### Bug Fixes
 - Fix UPC leading zeros stripped by Excel before upload — `format_uploaded_grid()` in `utils/distro_grid/formatters.py` now applies `zfill(11)` after converting float-encoded UPCs to int, preserving leading zeros before the value reaches the VARCHAR(20) Snowflake column
 - Fix empty SKU values causing type errors on upload — `format_uploaded_grid()` now fills null/empty SKU with `0` and casts to int before the value reaches the NUMBER(20,0) Snowflake column
+- Fix gap report and gap email crashing on Streamlit Cloud with `NotSupportedError` — replaced `fetch_pandas_all()` with `fetchall()` + `pd.DataFrame(rows, columns=cols)` in `utils/gap_report_builder.py` and `utils/email_gap_utils.py`; `fetch_pandas_all()` requires the Arrow C extension (`nanoarrow`) which is not available on Python 3.14 on Streamlit Cloud
+- Fix Email Gap Report page crashing on Streamlit Cloud — restored `width='stretch'` on 6 widgets in `app_pages/email_gap_report.py` (`st.dataframe`, 2× `download_button`, 3× `button`) that were incorrectly reverted to `use_container_width=True`; Streamlit 1.56.0 removed `use_container_width` support after 2025-12-31
+- Fix `validate_contacts_before_send()` crashing entire gap email send on SQL error — call is now wrapped in `try/except Exception: missing_contacts = []` in `send_gap_history_pdfs()` so a SQL failure (missing column, permissions) degrades gracefully instead of aborting all emails
 
 ### UI Changes
 - None
@@ -99,6 +102,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Add `check_sales_contacts_coverage()` to `customers_helpers.py` — validates new reps have active SALES_CONTACTS entries at upload time; shows red blocking error in UI if any are missing
 - Add `validate_contacts_before_send()` to `gap_history_mailer.py` — blocks gap report email send if any rep in the current report has no active SALES_CONTACTS entry; returns actionable error message listing missing reps
 - Add ownership change notice and missing-contacts blocking error to Customers upload UI in `load_company_sections.py`
+- Add Sales Contacts admin page (`app_pages/sales_contacts_admin.py`) — tenant admin UI for managing the `SALES_CONTACTS` table: add/edit/deactivate reps, set salesperson and manager email addresses, handle salesperson reassignment; used by Email Gap Report to route emails to the correct rep and manager
 
 ### Bug Fixes
 - Fix gap report emails routing to departed or wrong salespeople after route reorganization — email routing now uses live `CUSTOMERS.SALESPERSON` (via `CURRENT_SALESPERSON` column added to `fetch_current_streaks()`) instead of frozen `GAP_REPORT_SNAPSHOT.SALESPERSON_NAME`
@@ -107,6 +111,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### UI Changes
 - Customers upload page now shows info notice when stores are reassigned and a blocking red error when new reps are missing from Sales Contacts
 - Gap History Emailer now shows a blocking red error (no emails sent) when any rep in the report is missing from Sales Contacts
+- Email gap report HTML redesigned — new card layout with header gradient, metrics row (Total Gaps / New This Week / 2–3 Weeks / 4+ Weeks with color-coded severity), two-column chains + suppliers panel, modernized execution table, and attachment note; email now uses live `CURRENT_SALESPERSON` routing so it reaches the rep currently assigned to each store
 
 ### Snowflake / DB Changes
 - New table: `SALESPERSON_CHANGE_LOG` — stores TENANT_ID (VARCHAR), CHAIN_NAME, STORE_NUMBER, OLD_SALESPERSON, NEW_SALESPERSON, CHANGED_AT, UPLOAD_BATCH_ID; indexed on (TENANT_ID, CHAIN_NAME, STORE_NUMBER, CHANGED_AT) and (TENANT_ID, NEW_SALESPERSON, CHANGED_AT)
