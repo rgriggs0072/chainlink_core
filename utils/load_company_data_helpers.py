@@ -74,6 +74,103 @@ NULL_LIKE = {"nan", "none", "null", "NaN", "None", "NULL", ""}
 
 
 # =============================================================================
+# ✅ SHARED CHAIN VALIDATION HELPERS (Distro Grid + Reset Schedule)
+# =============================================================================
+
+def load_chain_stores(conn, tenant_id: int, chain_name: str) -> dict:
+    """
+    Return {str(STORE_NUMBER): STORE_NAME} for active stores of a chain.
+    Used for both STORE_NUMBER lookup validation and STORE_NAME auto-population.
+    STORE_NUMBER is normalized to str so comparisons are type-safe.
+    Always scoped to tenant_id — never cross-tenant.
+    """
+    sql = """
+        SELECT STORE_NUMBER, STORE_NAME
+        FROM CUSTOMERS
+        WHERE TENANT_ID = %(tenant_id)s
+          AND CHAIN_NAME = %(chain_name)s
+          AND ACCOUNT_STATUS = 'ACTIVE'
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, {"tenant_id": str(tenant_id), "chain_name": chain_name})
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+    return {str(row[0]).strip(): str(row[1]).strip() for row in rows}
+
+
+def validate_and_enrich_chain_file(
+    df: pd.DataFrame,
+    selected_chain: str,
+    chain_store_lookup: dict,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """
+    Validate and enrich a distro grid or reset schedule upload DataFrame.
+
+    Checks (in order):
+      1. STORE_NUMBER column present — hard stop if missing.
+      2. CHAIN_NAME column — auto-add from dropdown if absent; validate match if present.
+      3. STORE_NUMBER values exist in CUSTOMERS — unknown rows are dropped with a warning.
+      4. STORE_NAME column — auto-populate from CUSTOMERS lookup if absent or blank.
+
+    Returns (enriched_df, errors, warnings).
+    errors blocks the upload; warnings are non-blocking (shown to user, upload proceeds).
+    Column names must already be normalized to UPPERCASE before calling.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    df = df.copy()
+
+    # 1. STORE_NUMBER required
+    if "STORE_NUMBER" not in df.columns:
+        errors.append("❌ Required column STORE_NUMBER is missing from the uploaded file.")
+        return df, errors, warnings
+
+    # Normalize STORE_NUMBER to str for type-safe lookup comparison
+    df["STORE_NUMBER"] = df["STORE_NUMBER"].astype(str).str.strip()
+
+    # 2. CHAIN_NAME — auto-add or validate
+    if "CHAIN_NAME" not in df.columns:
+        df["CHAIN_NAME"] = selected_chain
+    else:
+        df["CHAIN_NAME"] = df["CHAIN_NAME"].astype(str).str.strip()
+        # Treat empty / NaN cells as missing — auto-fill from dropdown
+        df["CHAIN_NAME"] = df["CHAIN_NAME"].replace({"NAN": selected_chain, "": selected_chain})
+        # Validate any remaining non-empty values match the selection
+        mismatched = df[df["CHAIN_NAME"] != selected_chain]["CHAIN_NAME"].unique()
+        if len(mismatched) > 0:
+            errors.append(
+                f"❌ CHAIN_NAME mismatch: file contains '{', '.join(mismatched)}' "
+                f"but selected chain is '{selected_chain}'. "
+                f"Ensure your file matches the selected chain, or correct the CHAIN_NAME column."
+            )
+            return df, errors, warnings
+
+    # 3. STORE_NUMBER lookup — skip unknown rows, warn user
+    unknown = [sn for sn in df["STORE_NUMBER"].unique() if sn not in chain_store_lookup]
+    if unknown:
+        df = df[df["STORE_NUMBER"].isin(chain_store_lookup.keys())].copy()
+        shown = sorted(unknown)[:20]
+        ellipsis = "..." if len(unknown) > 20 else ""
+        warnings.append(
+            f"⚠️ {len(unknown)} store number(s) not found in your customer data and were excluded: "
+            f"{', '.join(shown)}{ellipsis}. "
+            f"Only stores in your customer file will be loaded."
+        )
+
+    # 4. STORE_NAME — auto-populate from CUSTOMERS if absent or blank
+    if "STORE_NAME" not in df.columns:
+        df["STORE_NAME"] = df["STORE_NUMBER"].map(chain_store_lookup)
+    else:
+        df["STORE_NAME"] = df["STORE_NAME"].astype(str).str.strip()
+        mask = df["STORE_NAME"].isin({"", "NAN", "nan"})
+        df.loc[mask, "STORE_NAME"] = df.loc[mask, "STORE_NUMBER"].map(chain_store_lookup)
+
+    return df, errors, warnings
+
+
+# =============================================================================
 # ✅ COMMON CLEANING / NORMALIZATION HELPERS
 # =============================================================================
 
@@ -517,6 +614,38 @@ def format_customers_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
 def validate_customers_upload(df: pd.DataFrame) -> ValidationResult:
     """Schema validation via validate_dataframe()."""
     return validate_dataframe(df, CUSTOMERS_SCHEMA)
+
+
+def check_duplicate_store_numbers(df: pd.DataFrame) -> list[dict]:
+    """
+    Detect CHAIN_NAME + STORE_NUMBER combinations that map to different physical
+    locations (different ADDRESS or CITY). Same-location exact duplicates are
+    also flagged since they indicate a data entry error.
+
+    Returns a list of issue dicts:
+        {chain, store_number, count, locations: [{ADDRESS, CITY, SALESPERSON}]}
+    Returns [] if required columns are missing or no duplicates found.
+    """
+    required = {"CHAIN_NAME", "STORE_NUMBER", "ADDRESS", "CITY", "SALESPERSON"}
+    if not required.issubset(df.columns):
+        return []
+
+    dupes = df[df.duplicated(subset=["CHAIN_NAME", "STORE_NUMBER"], keep=False)].copy()
+    if dupes.empty:
+        return []
+
+    issues: list[dict] = []
+    for (chain, store_num), group in dupes.groupby(["CHAIN_NAME", "STORE_NUMBER"]):
+        if group["CITY"].nunique() > 1 or group["ADDRESS"].nunique() > 1:
+            locations = group[["ADDRESS", "CITY", "SALESPERSON"]].to_dict("records")
+            issues.append({
+                "chain": str(chain),
+                "store_number": str(store_num),
+                "count": len(group),
+                "locations": locations,
+            })
+
+    return issues
 
 
 def validate_customers_against_existing_chains(df: pd.DataFrame) -> tuple[list[str], list[str]]:
@@ -1367,19 +1496,34 @@ def _run_gap_report_refresh(conn) -> None:
 # 📥 CUSTOMERS UPLOAD (TEMP stage safe)
 # =============================================================================
 
-def write_customers_to_snowflake(df: pd.DataFrame) -> None:
+def write_customers_to_snowflake(df: pd.DataFrame) -> dict | None:
     """
     Upload validated Customers data safely using TEMP stage pattern.
+
+    Detects salesperson ownership changes before upload (while CUSTOMERS still
+    has old data), logs them atomically with the insert, and validates that all
+    new reps have active SALES_CONTACTS entries.
 
     Safety:
     - TEMP stage table
     - insert stage
     - validate stage rowcount
-    - transaction: TRUNCATE CUSTOMERS then INSERT from stage with audit fields
+    - transaction: TRUNCATE CUSTOMERS + INSERT from stage + log ownership changes
+
+    Returns:
+        dict with keys n_changes, changes_df, missing_contacts on success
+        None on failure (st.error is shown internally)
     """
+    import uuid
+    from utils.customers_helpers import (
+        detect_ownership_changes,
+        log_ownership_changes,
+        check_sales_contacts_coverage,
+    )
+
     if df is None or df.empty:
         st.error("❌ Nothing to upload: Customers dataframe is empty.")
-        return
+        return None
 
     df = df.copy()
     df.columns = [str(c).strip().upper() for c in df.columns]
@@ -1387,11 +1531,16 @@ def write_customers_to_snowflake(df: pd.DataFrame) -> None:
 
     conn, cursor, tenant_id = _get_conn_and_cursor()
     if not conn or not cursor or not tenant_id:
-        return
+        return None
 
     now_ts, today_date = _build_audit_fields()
+    batch_id = str(uuid.uuid4())[:8]
 
     try:
+        # Detect ownership changes BEFORE truncate (CUSTOMERS still has old data)
+        changes_df = detect_ownership_changes(conn, tenant_id, df)
+        missing_contacts = check_sales_contacts_coverage(conn, tenant_id, changes_df)
+
         cursor.execute(
             """
             CREATE TEMP TABLE CUSTOMERS_STAGE (
@@ -1457,11 +1606,29 @@ def write_customers_to_snowflake(df: pd.DataFrame) -> None:
             (tenant_id, now_ts, now_ts, today_date),
         )
 
-        _finalize_transaction(cursor, conn, "✅ Customers uploaded (TEMP stage, safe truncate/insert).")
+        # Log ownership changes atomically with the CUSTOMERS insert
+        n_changes = log_ownership_changes(conn, tenant_id, changes_df, batch_id)
+
+        conn.commit()
+        try:
+            cursor.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        return {
+            "n_changes": n_changes,
+            "changes_df": changes_df,
+            "missing_contacts": missing_contacts,
+        }
 
     except Exception as e:
         _rollback_transaction(conn, cursor)
         st.error(f"❌ Customer upload failed (target protected): {e}")
+        return None
 
 
 # =============================================================================

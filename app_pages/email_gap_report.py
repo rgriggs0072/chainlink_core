@@ -273,7 +273,7 @@ def render() -> None:
   margin-bottom: 6px;
 }
 .snapshot-card {
-  background: #F8F2EB;
+  background: #F1F5F9;
   border: 1px solid rgba(0,0,0,0.06);
   border-radius: 14px;
   padding: 14px 14px 10px 14px;
@@ -486,7 +486,7 @@ def render() -> None:
         ascending=[False, True, True],
     )
 
-    st.dataframe(sp_df, width='stretch', hide_index=True)
+    st.dataframe(sp_df, use_container_width=True, hide_index=True)
     st.write(f"{selected_sp}: {len(sp_df)} active gaps")
 
     # ✅ Execution summary MUST be computed here (runtime), not at import time
@@ -505,7 +505,7 @@ def render() -> None:
         pdf_bytes,
         file_name=f"{_safe_label(selected_sp)}_gap_history.pdf",
         mime="application/pdf",
-        width='stretch',
+        use_container_width=True,
     )
 
     # All PDFs ZIP (per-person exec summary so ZIP matches email too)
@@ -523,7 +523,7 @@ def render() -> None:
         _zip_pdfs(all_pdfs, "gap_history"),
         file_name=f"gap_history_{datetime.now():%Y%m%d_%H%M}.zip",
         mime="application/zip",
-        width='stretch',
+        use_container_width=True,
     )
 
     # -------------------------------------------------------------------------
@@ -533,15 +533,17 @@ def render() -> None:
     st.subheader("Send Emails")
 
     sender_email = DEFAULT_SENDER_EMAIL
+    ai_api_key = ""
     try:
         if hasattr(st, "secrets"):
             sender_email = st.secrets.get("mail", {}).get("sender_email", DEFAULT_SENDER_EMAIL)
+            ai_api_key = st.secrets.get("anthropic", {}).get("api_key", "")
     except Exception:
         sender_email = DEFAULT_SENDER_EMAIL
 
     s1, s2, s3 = st.columns([1, 1, 0.7])
 
-    if s1.button(f"Send {selected_sp} Only", type="primary", width='stretch'):
+    if s1.button(f"Send {selected_sp} Only", type="primary", use_container_width=True):
 
         result = send_gap_history_pdfs(
             con=conn,
@@ -553,32 +555,29 @@ def render() -> None:
             salespeople=None,
             min_streak=res["min_streak"],
             only_salespeople=[selected_sp],
+            ai_api_key=ai_api_key,
         )
 
-        st.success(
-            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
-            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
-            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
-            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
-            f"CCs: {result.get('manager_emailed', 0)})"
-        )
-
-        
-        if result.get("errors"):
-            st.error("Some emails were partially refused by SMTP")
-            st.json(result["errors"])
-
-        if result.get("sent_without_cc"):
-            st.warning(
-                "Sent without CC for: "
-                + ", ".join(result["sent_without_cc"])
+        if result.get("missing_contacts"):
+            st.error(f"**Email send blocked:** {result.get('error')}")
+        else:
+            st.success(
+                f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+                f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+                f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+                f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+                f"CCs: {result.get('manager_emailed', 0)})"
             )
+            if result.get("errors"):
+                st.error("Some emails were partially refused by SMTP")
+                st.json(result["errors"])
+            if result.get("sent_without_cc"):
+                st.warning(
+                    "Sent without CC for: "
+                    + ", ".join(result["sent_without_cc"])
+                )
 
-        
-
-
-
-    if s2.button("Send ALL", type="secondary", width='stretch'):
+    if s2.button("Send ALL", type="secondary", use_container_width=True):
 
         result = send_gap_history_pdfs(
             con=conn,
@@ -590,32 +589,32 @@ def render() -> None:
             salespeople=None,
             min_streak=res["min_streak"],
             only_salespeople=sp_list,
+            ai_api_key=ai_api_key,
         )
 
-        st.success(
-            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
-            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
-            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
-            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
-            f"CCs: {result.get('manager_emailed', 0)})"
-        )
-
-       
-        if result.get("errors"):
-            st.error("Some emails were partially refused by SMTP")
-            st.json(result["errors"])
-
-        if result.get("sent_without_cc"):
-            st.warning(
-                "Sent without CC for: "
-                + ", ".join(result["sent_without_cc"])
+        if result.get("missing_contacts"):
+            st.error(f"**Email send blocked:** {result.get('error')}")
+        else:
+            st.success(
+                f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+                f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+                f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+                f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+                f"CCs: {result.get('manager_emailed', 0)})"
             )
+            if result.get("errors"):
+                st.error("Some emails were partially refused by SMTP")
+                st.json(result["errors"])
+            if result.get("sent_without_cc"):
+                st.warning(
+                    "Sent without CC for: "
+                    + ", ".join(result["sent_without_cc"])
+                )
 
-        
 
 
 
-    if s3.button("Clear", width='stretch'):
+    if s3.button("Clear", use_container_width=True):
 
         for k in SESSION_DEFAULTS:
             st.session_state[k] = None

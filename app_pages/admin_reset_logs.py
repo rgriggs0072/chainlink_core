@@ -37,7 +37,7 @@ def render():
             elif success_filter == "Failure":
                 df = df[df["SUCCESS"] == False]
 
-        st.dataframe(df, width='stretch')
+        st.dataframe(df, use_container_width=True)
 
     except Exception as e:
         st.error("Failed to load reset logs.")

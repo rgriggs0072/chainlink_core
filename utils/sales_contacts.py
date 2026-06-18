@@ -617,9 +617,11 @@ def deactivate_contact_by_id(conn, *, tenant_id: int, salesperson_id: int) -> No
 
 REASSIGNMENT_TABLE_MAP: Dict[str, str] = {
     "CUSTOMERS": "SALESPERSON",
+    # GAP_REPORT_SNAPSHOT intentionally excluded — historical snapshot rows are
+    # preserved as-is; route reorganizations are handled by upload-time detection
+    # in customers_helpers.py + live CUSTOMERS lookup at email time.
     "EXECUTION_SUMMARY_TMP": "SALESPERSON",
     "EXECUTION_SUMMARY_TMP2": "SALESPERSON",
-    "GAP_REPORT_SNAPSHOT": "SALESPERSON_NAME",
     "GAP_REPORT_TMP": "SALESPERSON",
     "GAP_REPORT_TMP2": "SALESPERSON",
     "SALESPERSON_EXECUTION_SUMMARY_TBL": "SALESPERSON",

@@ -221,6 +221,9 @@ def format_uploaded_grid(
     # Normalize headers: UPPER_CASE_WITH_UNDERSCORES
     df.columns = [_normalize_header(c) for c in df.columns]
 
+    # Strip leading/trailing whitespace from all string columns at format time
+    str_cols = df.select_dtypes(include="object").columns
+    df[str_cols] = df[str_cols].apply(lambda col: col.str.strip())
 
     if layout == "standard":
         df = _format_standard(df)
@@ -229,6 +232,18 @@ def format_uploaded_grid(
 
     # UI wins: inject CHAIN_NAME from controls
     df["CHAIN_NAME"] = chain_name.strip().upper()
+
+    # Preserve UPC leading zeros Excel strips (VARCHAR(20) column)
+    if "UPC" in df.columns:
+        df["UPC"] = df["UPC"].apply(
+            lambda x: str(int(float(x))).zfill(11)
+            if pd.notna(x) and str(x).strip() not in ("", "0")
+            else str(x)
+        )
+
+    # Fill empty SKU with 0 (NUMBER(20,0) column)
+    if "SKU" in df.columns:
+        df["SKU"] = df["SKU"].fillna(0).astype(int)
 
     # Ensure all required upload columns exist
     for col_name, spec in UPLOAD_COLUMNS.items():

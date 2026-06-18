@@ -143,7 +143,7 @@ def render():
         return
 
     for options in (salesperson_options, store_options, supplier_options):
-        options.sort()
+        options.sort(key=lambda x: x.upper())
         options.insert(0, "All")
 
     # ------------------------------------------------------------------

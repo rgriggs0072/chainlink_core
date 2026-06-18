@@ -139,9 +139,9 @@ def render():
                     .reset_index(name="New Placements")
                     .sort_values("New Placements", ascending=False)
                 )
-                st.dataframe(new_by_mfg, width='stretch')
+                st.dataframe(new_by_mfg, use_container_width=True)
                 with st.expander("View full new placements detail"):
-                    st.dataframe(new_df, width='stretch')
+                    st.dataframe(new_df, use_container_width=True)
 
         with tab2:
             if removed_df.empty:
@@ -153,9 +153,9 @@ def render():
                     .reset_index(name="Removed Placements")
                     .sort_values("Removed Placements", ascending=False)
                 )
-                st.dataframe(removed_by_mfg, width='stretch')
+                st.dataframe(removed_by_mfg, use_container_width=True)
                 with st.expander("View full removed placements detail"):
-                    st.dataframe(removed_df, width='stretch')
+                    st.dataframe(removed_df, use_container_width=True)
 
         st.markdown("---")
 

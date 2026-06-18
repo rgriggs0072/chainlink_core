@@ -1,4 +1,4 @@
-﻿# ------------------------------------------- predictive_purchases.py ------------------------------------------------------
+# ------------------------------------------- predictive_purchases.py ------------------------------------------------------
 """
 Predictive Purchases Page
 - Admin uploads sales file → loads RAW → aggregates WEEKLY → runs forecasts.
@@ -126,7 +126,7 @@ def render():
     # ---------- Display Results & Actions (only after forecasts exist) ----------
     df = st.session_state.get("forecast_summary")
     if isinstance(df, pd.DataFrame) and not df.empty:
-        st.dataframe(df, width='stretch')
+        st.dataframe(df, use_container_width=True)
 
         # Totals (OK rows only)
         ok_mask = df["status"].astype(str).str.startswith("ok")
@@ -154,7 +154,7 @@ def render():
                 )
                 .properties(height=260)
             )
-            st.altair_chart(chart, width='stretch')
+            st.altair_chart(chart, use_container_width=True)
 
         # --- Actions row (show only after forecasts have run) ---
         act_cols = st.columns([1.2, 1.2, 1.6, 6])

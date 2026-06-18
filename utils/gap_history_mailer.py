@@ -33,6 +33,7 @@ import pandas as pd
 
 from utils.email_utils import send_email_with_attachment
 from utils.pdf_reports import GAP_HISTORY_PDF_COLUMNS, build_gap_streaks_pdf
+from utils.ai_insights import generate_salesperson_coaching
 
 
 
@@ -180,6 +181,7 @@ def fetch_current_streaks(
                 ADDRESS,
                 CITY,
                 COUNTY,
+                SALESPERSON,
                 ROW_NUMBER() OVER (
                     PARTITION BY TENANT_ID, CHAIN_NAME, STORE_NUMBER
                     ORDER BY COALESCE(UPDATED_AT, CREATED_AT) DESC
@@ -193,6 +195,7 @@ def fetch_current_streaks(
           s.FIRST_GAP_WEEK,
           s.LAST_GAP_WEEK,
           s.SALESPERSON_NAME,
+          c.SALESPERSON AS CURRENT_SALESPERSON,
           s.CHAIN_NAME,
           s.STORE_NUMBER,
           s.STORE_NAME,
@@ -305,6 +308,7 @@ def build_summary_html(
     sp_df: pd.DataFrame,
     tenant_name: str = "",
     execution_df: Optional[pd.DataFrame] = None,
+    ai_coaching: str = "",
 ) -> str:
     """
     Build a professional HTML email body for Gap History (PDF attachment).
@@ -330,8 +334,13 @@ def build_summary_html(
 
     def _bullet_lines(d: dict) -> str:
         if not d:
-            return "<div style='color:#666;'>None</div>"
-        return "".join(f"<div style='margin:2px 0;'>• <b>{k}</b>: {v}</div>" for k, v in d.items())
+            return "<div style='color:#94A3B8; font-size:13px;'>None</div>"
+        return "".join(
+            f"<div style='font-size:13px; margin:5px 0; color:#1E293B;'>"
+            f"<span style='color:#6497D6; font-weight:700;'>&#x25CF;</span> "
+            f"<b>{k}</b> &nbsp;<span style='color:#64748B;'>{v} gaps</span></div>"
+            for k, v in d.items()
+        )
 
     def _execution_block(exe: Optional[pd.DataFrame]) -> str:
         if exe is None or exe.empty:
@@ -348,38 +357,33 @@ def build_summary_html(
         gaps_away = _safe_float(r.get("GAPS_AWAY_FROM_90"), 0.0)
 
         return f"""
-        <div class="section">
-          <h3>Weekly Execution Focus</h3>
-
-          <table role="presentation" style="width:100%; border-collapse:collapse; font-size:13px; border:1px solid #e6e9ef;">
-            <tr style="background:#F8F2EB;">
-              <th style="text-align:left; padding:8px; border:1px solid #e6e9ef;">Salesman</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">In Schematic</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">Fulfilled</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">Gaps</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">Placement Needed (90%)</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">% Execution</th>
-              <th style="text-align:right; padding:8px; border:1px solid #e6e9ef;">Gaps Away (90%)</th>
+        <div style="background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:12px;">
+          <div class="section-title">Weekly Execution Focus</div>
+          <table role="presentation" style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
+            <tr style="background:#F1F5F9;">
+              <th style="text-align:left; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Salesperson</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">In Schematic</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Fulfilled</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Gaps</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Needed for 90%</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Execution</th>
+              <th style="text-align:right; padding:9px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#64748B;">Gaps to 90%</th>
             </tr>
             <tr>
-              <td style="padding:8px; border:1px solid #e6e9ef;">{salesman}</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{in_sch}</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{fulfilled}</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{gaps}</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{placement_90:,.1f}</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{pct_exec}%</td>
-              <td style="padding:8px; border:1px solid #e6e9ef; text-align:right;">{gaps_away:,.1f}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; font-weight:600;">{salesman}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right;">{in_sch}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right;">{fulfilled}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right; color:#DC2626; font-weight:700;">{gaps}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right;">{placement_90:,.0f}</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right; font-size:16px; font-weight:800; color:#6497D6;">{pct_exec}%</td>
+              <td style="padding:9px 10px; border-bottom:1px solid #F1F5F9; text-align:right; color:#DC2626;">{gaps_away:,.0f}</td>
             </tr>
           </table>
-
-          <div class="note" style="margin-top:10px;">
-            <b>We need to get to 90% execution here.</b> Please focus on filling the gaps with products in stock.
-            Reach out to your manager if you need support. Thank you!
-          </div>
         </div>
         """
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    tenant_line = f" &nbsp;|&nbsp; {tenant_name.upper()}" if tenant_name else ""
 
     return f"""
 <!doctype html>
@@ -387,65 +391,170 @@ def build_summary_html(
 <head>
   <meta charset="utf-8">
   <style>
-    body {{ margin:0; padding:0; background:#f6f8fb; }}
-    .wrap {{ max-width:720px; margin:0 auto; padding:18px; font-family: Arial, Helvetica, sans-serif; color:#111; }}
-    .card {{ background:#ffffff; border:1px solid #e6e9ef; border-radius:14px; overflow:hidden; }}
-    .header {{ background:#6497D6; color:#fff; padding:16px 18px; }}
-    .title {{ font-size:18px; font-weight:700; margin:0; }}
-    .subtitle {{ font-size:13px; opacity:0.95; margin:6px 0 0; }}
-    .content {{ padding:16px 18px 18px; }}
-    .metrics {{ width:100%; border-collapse:separate; border-spacing:10px; }}
-    .metric {{ background:#F8F2EB; border:1px solid rgba(0,0,0,0.06); border-radius:12px; padding:12px; }}
-    .m_label {{ font-size:12px; color:#444; margin:0 0 6px; }}
-    .m_val {{ font-size:20px; font-weight:700; margin:0; }}
-    .section {{ margin-top:14px; }}
-    .section h3 {{ font-size:14px; margin:0 0 8px; }}
-    .note {{ background:#fff7e6; border:1px solid #ffe2a8; padding:10px 12px; border-radius:12px; font-size:13px; }}
-    .footer {{ color:#777; font-size:12px; margin-top:14px; }}
+    body {{ margin:0; padding:0; background:#EEF2F7; font-family: Arial, Helvetica, sans-serif; color:#1E293B; }}
+    .wrap {{ max-width:680px; margin:0 auto; padding:24px 16px; }}
+
+    /* Header rendered via table+bgcolor for Outlook — no CSS class needed */
+
+    /* Coaching */
+    .coaching {{ background:#fff; border-left:4px solid #991B1B; border-radius:10px; padding:16px 20px; margin:12px 0 0 0; }}
+    .coaching-label {{ font-size:13px; font-weight:700; letter-spacing:1px; color:#991B1B; text-transform:uppercase; margin:0 0 8px; }}
+    .coaching-text {{ font-size:14px; line-height:1.65; color:#1E293B; margin:0; }}
+
+    /* Metrics row */
+    .metrics-row {{ display:table; width:100%; border-collapse:separate; border-spacing:0; }}
+    .metric-cell {{ display:table-cell; width:25%; padding:14px 10px; text-align:center; vertical-align:top; }}
+    .metric-inner {{ border-radius:10px; padding:12px 8px; }}
+    .m-new {{ background:#FEF3C7; }}
+    .m-mid {{ background:#FEE2E2; }}
+    .m-old {{ background:#7F1D1D; color:#fff; }}
+    .m-total {{ background:#EFF6FF; }}
+    .m_label {{ font-size:11px; font-weight:600; opacity:0.75; margin:0 0 5px; text-transform:uppercase; letter-spacing:0.5px; }}
+    .m_val {{ font-size:24px; font-weight:800; margin:0; line-height:1; }}
+
+    /* Two-col section */
+    .two-col {{ display:table; width:100%; border-collapse:separate; border-spacing:12px 0; margin-top:4px; }}
+    .col {{ display:table-cell; width:50%; vertical-align:top; }}
+    .section-box {{ background:#fff; border-radius:10px; padding:14px 16px; height:100%; box-sizing:border-box; }}
+    .section-title {{ font-size:11px; font-weight:700; letter-spacing:1px; color:#64748B; text-transform:uppercase; margin:0 0 10px; }}
+    .bullet {{ font-size:13px; margin:5px 0; color:#1E293B; }}
+    .bullet b {{ color:#6497D6; }}
+
+    /* Execution table */
+    .exec-wrap {{ background:#fff; border-radius:10px; padding:14px 16px; margin-top:0; }}
+    .exec-table {{ width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }}
+    .exec-table th {{ background:#F1F5F9; color:#64748B; font-weight:700; text-align:left; padding:8px 10px; border-bottom:2px solid #E2E8F0; font-size:11px; letter-spacing:0.5px; text-transform:uppercase; }}
+    .exec-table td {{ padding:8px 10px; border-bottom:1px solid #F1F5F9; font-size:13px; }}
+    .exec-pct {{ font-size:18px; font-weight:800; color:#6497D6; }}
+
+    /* Attachment note */
+    .attach-note {{ background:#F8FAFC; border:1px dashed #B3D7ED; border-radius:10px; padding:12px 16px; font-size:13px; color:#475569; }}
+
+    /* Footer */
+    .footer {{ text-align:center; color:#94A3B8; font-size:11px; margin-top:16px; }}
+
+    .card-body {{ background:#F1F5F9; padding:20px; border-radius:0 0 16px 16px; }}
+    .gap-row {{ margin-bottom:12px; }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <div class="header">
-        <p class="title">Gap History – Weekly Focus</p>
-        <p class="subtitle">{salesperson_name}{f" • {tenant_name}" if tenant_name else ""}</p>
-      </div>
 
-      <div class="content">
-        <table class="metrics" role="presentation">
+    <!-- Header (table+bgcolor for Outlook compatibility) -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-radius:16px 16px 0 0; overflow:hidden;">
+      <tr>
+        <td bgcolor="#6497D6" style="background:#6497D6; padding:22px 24px 18px; border-radius:16px 16px 0 0;">
+          <p style="font-size:11px; font-weight:700; letter-spacing:2px; color:#B3D7ED; margin:0 0 6px; text-transform:uppercase;">Gap History &mdash; Weekly Focus</p>
+          <p style="font-size:22px; font-weight:700; color:#ffffff; margin:0;">{salesperson_name}</p>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Coaching note (top, before everything) -->
+    {f'''
+    <div class="coaching" style="padding-top:20px; padding-bottom:16px;">
+      <div class="coaching-label">&#x1F4A1; Your Weekly Coaching Note</div>
+      <p class="coaching-text">{ai_coaching}</p>
+    </div>
+    ''' if ai_coaching else ''}
+
+    <div class="card-body">
+
+      <!-- Gap metrics -->
+      <div style="margin-bottom:12px;">
+        <table role="presentation" style="width:100%; border-collapse:separate; border-spacing:8px;">
           <tr>
-            <td class="metric" width="25%"><div class="m_label">Active gaps</div><div class="m_val">{active_gaps}</div></td>
-            <td class="metric" width="25%"><div class="m_label">New this week</div><div class="m_val">{new_this_week}</div></td>
-            <td class="metric" width="25%"><div class="m_label">2–3 weeks</div><div class="m_val">{two_three}</div></td>
-            <td class="metric" width="25%"><div class="m_label">4+ weeks</div><div class="m_val">{four_plus}</div></td>
+            <td style="width:25%; background:#EFF6FF; border-radius:10px; padding:14px 10px; text-align:center;">
+              <div class="m_label" style="color:#3B82F6;">Total Gaps</div>
+              <div class="m_val" style="color:#1E40AF;">{active_gaps}</div>
+            </td>
+            <td style="width:25%; background:#FEF3C7; border-radius:10px; padding:14px 10px; text-align:center;">
+              <div class="m_label" style="color:#D97706;">New This Week</div>
+              <div class="m_val" style="color:#92400E;">{new_this_week}</div>
+            </td>
+            <td style="width:25%; background:#FEE2E2; border-radius:10px; padding:14px 10px; text-align:center;">
+              <div class="m_label" style="color:#EF4444;">2&ndash;3 Weeks</div>
+              <div class="m_val" style="color:#991B1B;">{two_three}</div>
+            </td>
+            <td style="width:25%; background:#7F1D1D; border-radius:10px; padding:14px 10px; text-align:center;">
+              <div class="m_label" style="color:#FCA5A5;">4+ Weeks</div>
+              <div class="m_val" style="color:#fff;">{four_plus}</div>
+            </td>
           </tr>
         </table>
-
-        <div class="section">
-          <h3>Top chains</h3>
-          {_bullet_lines(top_chains)}
-        </div>
-
-        <div class="section">
-          <h3>Top suppliers</h3>
-          {_bullet_lines(top_suppliers)}
-        </div>
-
-        {_execution_block(execution_df)}
-
-        <div class="section note">
-          <b>Attached:</b> your Gap History PDF.<br/>
-          Priority order: <b>4+ weeks</b> → <b>2–3 weeks</b> → <b>new this week</b>.
-        </div>
-
-        <div class="footer">Generated {generated}</div>
       </div>
-    </div>
+
+      <!-- Chains + Suppliers side by side -->
+      <table role="presentation" style="width:100%; border-collapse:separate; border-spacing:8px; margin-bottom:12px;">
+        <tr>
+          <td style="width:50%; vertical-align:top; background:#fff; border-radius:10px; padding:14px 16px;">
+            <div class="section-title">Top Chains</div>
+            {_bullet_lines(top_chains)}
+          </td>
+          <td style="width:50%; vertical-align:top; background:#fff; border-radius:10px; padding:14px 16px;">
+            <div class="section-title">Top Suppliers</div>
+            {_bullet_lines(top_suppliers)}
+          </td>
+        </tr>
+      </table>
+
+      <!-- Execution Focus -->
+      {_execution_block(execution_df)}
+
+      <!-- Attachment note -->
+      <div class="attach-note">
+        <b>&#x1F4CE; Attached:</b> your full Gap History PDF &mdash;
+        work oldest gaps first: <b>4+ weeks &rarr; 2&ndash;3 weeks &rarr; new this week</b>.
+      </div>
+
+    </div><!-- end card-body -->
+
+    <div class="footer">Chainlink Analytics &bull; {tenant_name.upper() + " &bull; " if tenant_name else ""}Generated {generated}</div>
   </div>
 </body>
 </html>
 """.strip()
+
+
+# =============================================================================
+# Pre-send validation
+# =============================================================================
+def validate_contacts_before_send(
+    con,
+    tenant_id: int,
+    streaks_df: pd.DataFrame,
+) -> List[str]:
+    """
+    Validate that every salesperson in the current gap data has an active
+    SALES_CONTACTS entry. Uses CURRENT_SALESPERSON_UPPER (live CUSTOMERS value).
+
+    Returns a list of rep names missing from SALES_CONTACTS.
+    Empty list means all reps are covered — safe to send.
+    """
+    reps_in_report = (
+        streaks_df["CURRENT_SALESPERSON_UPPER"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+
+    if not reps_in_report:
+        return []
+
+    with con.cursor() as cur:
+        cur.execute(
+            """
+            SELECT UPPER(TRIM(SALESPERSON_NAME)) AS SALESPERSON_NAME_NORM
+            FROM SALES_CONTACTS
+            WHERE TENANT_ID = %s
+              AND IS_ACTIVE = TRUE
+            """,
+            (int(tenant_id),),
+        )
+        rows = cur.fetchall()
+
+    active_reps = {str(r[0]) for r in rows} if rows else set()
+    return [rep for rep in reps_in_report if rep not in active_reps]
 
 
 # =============================================================================
@@ -461,6 +570,7 @@ def send_gap_history_pdfs(
     salespeople: Optional[List[str]] = None,
     min_streak: int = 1,
     only_salespeople: Optional[List[str]] = None,
+    ai_api_key: str = "",
 ) -> Dict[str, object]:
     """
     Send per-salesperson Gap History emails with PDF attachments.
@@ -539,9 +649,44 @@ def send_gap_history_pdfs(
         streaks_df["SALESPERSON_NAME"].astype(str).str.strip().str.upper()
     )
 
+    # CURRENT_SALESPERSON: live assignment from CUSTOMERS; fall back to snapshot
+    # name for stores that exist in the snapshot but have been removed from CUSTOMERS
+    # (e.g., closed stores). This prevents those rows from silently dropping out.
+    streaks_df["CURRENT_SALESPERSON_UPPER"] = (
+        streaks_df["CURRENT_SALESPERSON"]
+        .fillna(streaks_df["SALESPERSON_NAME"])
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
     if only_salespeople:
         wanted = {_upper(x) for x in only_salespeople if str(x).strip()}
-        streaks_df = streaks_df[streaks_df["SALESPERSON_NAME_UPPER"].isin(wanted)]
+        streaks_df = streaks_df[streaks_df["CURRENT_SALESPERSON_UPPER"].isin(wanted)]
+
+    # -----------------------------
+    # Pre-send validation gate
+    # -----------------------------
+    missing_contacts = validate_contacts_before_send(con, tenant_id, streaks_df)
+    if missing_contacts:
+        missing_list = ", ".join(missing_contacts)
+        return {
+            "salesperson_success": 0,
+            "salesperson_fail": 0,
+            "skipped_salespeople": [],
+            "errors": [],
+            "sent_without_cc": [],
+            "salesperson_emailed": 0,
+            "manager_emailed": 0,
+            "total_emails_sent": 0,
+            "missing_contacts": missing_contacts,
+            "error": (
+                f"Cannot send gap report emails. The following salespeople have "
+                f"stores in this report but no email address in Sales Contacts: "
+                f"{missing_list}. "
+                f"Please add them to Sales Contacts and try again."
+            ),
+        }
 
     # -----------------------------
     # Orchestrate sends
@@ -552,7 +697,7 @@ def send_gap_history_pdfs(
     errors: List[dict] = []
     sent_without_cc: List[str] = []
 
-    for sp_key, sp_df in streaks_df.groupby("SALESPERSON_NAME_UPPER"):
+    for sp_key, sp_df in streaks_df.groupby("CURRENT_SALESPERSON_UPPER"):
         if not sp_key or sp_key not in contact_lookup.index:
             skipped.append(sp_key or "(missing salesperson)")
             continue
@@ -582,15 +727,24 @@ def send_gap_history_pdfs(
                 execution_df=execution_df,
             )
 
-            # 3) HTML body
+            # 3) AI coaching message (Haiku, per-salesperson)
+            coaching = generate_salesperson_coaching(
+                salesperson_name=salesperson_name,
+                sp_df=sp_df,
+                execution_df=execution_df,
+                api_key=ai_api_key,
+            )
+
+            # 4) HTML body
             html_body = build_summary_html(
                 salesperson_name=salesperson_name,
                 sp_df=sp_df,
                 tenant_name=tenant_name,
                 execution_df=execution_df,
+                ai_coaching=coaching,
             )
 
-            # 4) Send
+            # 5) Send
             subject = f"Gap History Report – {tenant_name}"
             filename = f"gap_history_{_safe_name_for_file(salesperson_name)}.pdf"
 

@@ -14,6 +14,7 @@ from utils.reset_schedule_helpers import (
 from utils.ui_helpers import download_workbook
 from utils.snowflake_utils import fetch_distinct_values
 from sf_connector.service_connector import connect_to_tenant_snowflake
+from utils.load_company_data_helpers import load_chain_stores, validate_and_enrich_chain_file
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +81,12 @@ def render_reset_schedule_formatter_section():
 
         if formatted_wb:
             st.success("✅ Formatting complete. Download to review before upload.")
+            record_count = formatted_wb.active.max_row - 1  # subtract header row
+            st.info(
+                f"**📋 Format Summary**\n\n"
+                f"- **Records:** {record_count:,}\n\n"
+                f"⚠️ If you selected the wrong chain, stop here and re-select before downloading."
+            )
             download_workbook(formatted_wb, "Formatted_Reset_Schedule.xlsx")
     except Exception as e:
         st.error(f"Failed to format reset schedule: {e}")
@@ -136,7 +143,7 @@ def render_reset_schedule_uploader_section():
     try:
         df = pd.read_excel(uploaded_file, engine="openpyxl")
         st.markdown("**Preview of uploaded data:**")
-        st.dataframe(df.head(), width='stretch')
+        st.dataframe(df.head(), use_container_width=True)
 
         # Chain name validation — block upload if file doesn't match selection
         if "CHAIN_NAME" in df.columns:
@@ -150,6 +157,28 @@ def render_reset_schedule_uploader_section():
                     "Please select the correct chain from the dropdown and re-submit."
                 )
                 return
+
+        # --- STORE_NUMBER / CHAIN_NAME / STORE_NAME validation + enrichment ---
+        conn = st.session_state.get("conn")
+        tenant_id = st.session_state.get("tenant_id")
+        selected_chain_upper = selected_chain.strip().upper()
+        chain_store_lookup = load_chain_stores(conn, tenant_id, selected_chain_upper)
+        if not chain_store_lookup:
+            st.error(
+                f"⛔ No active stores found for **{selected_chain_upper}** in your customer data. "
+                f"Upload your customer file first."
+            )
+            return
+        df, enrich_errors, enrich_warnings = validate_and_enrich_chain_file(
+            df, selected_chain_upper, chain_store_lookup
+        )
+        if enrich_errors:
+            st.error("⛔ Upload Blocked — Please resolve the following issues:")
+            for err in enrich_errors:
+                st.markdown(err)
+            return
+        for warn in enrich_warnings:
+            st.warning(warn)
 
         with st.spinner("Uploading to database..."):
             upload_reset_data(df, selected_chain)
@@ -252,7 +281,7 @@ def render_reset_schedule_editor_section():
     edited_df = st.data_editor(
         df,
         column_config=column_config,
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
         key="rs_inline_editor",
         num_rows="fixed",  # prevent adding/deleting rows

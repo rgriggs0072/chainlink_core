@@ -31,7 +31,7 @@ else:
     common_menu_styles = {
         "container": {
             "padding": "0!important",
-            "background-color": "#F8F2EB",  # light beige
+            "background-color": "#FFFFFF",  # white
         },
         "icon": {
             "color": "#6497D6",  # brand blue

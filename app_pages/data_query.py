@@ -128,6 +128,9 @@ SALES_REPORT (alias: SR):
   STORE_NUMBER, STORE_NAME, ADDRESS, CHAIN_NAME, UPC, PRODUCT_NAME,
   SALESPERSON, PURCHASED_YES_NO, SALE_DATE, TENANT_ID,
   CREATED_AT, LAST_LOAD_DATE
+  LAST_LOAD_DATE: the date this data was uploaded/loaded into Snowflake.
+    Use this for questions like "when was the last upload?" or "when was data last loaded?"
+  SALE_DATE: the transaction date from the source file — may be NULL if not captured in the upload.
   NOTE: There is NO COUNTY column in SALES_REPORT. Do not reference SR.COUNTY.
 
 KEY RELATIONSHIPS:
@@ -470,11 +473,13 @@ def render():
         "Queries are read-only and tenant-scoped."
     )
 
-    # ── Load chain names dynamically ──────────────────────────────────────────
-    try:
-        chain_names = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
-    except Exception:
-        chain_names = []
+    # ── Load chain names (cached in session_state to avoid repeated DB hits) ──
+    if "dq_chain_names" not in st.session_state:
+        try:
+            st.session_state["dq_chain_names"] = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
+        except Exception:
+            st.session_state["dq_chain_names"] = []
+    chain_names = st.session_state["dq_chain_names"]
 
     schema_context = _build_schema_context(chain_names)
 

@@ -25,6 +25,7 @@ from utils.load_company_data_helpers import (
     format_customers_upload,
     validate_customers_upload,
     validate_customers_against_existing_chains,
+    check_duplicate_store_numbers,
 
     # --- NEW SALES_REPORT UPLOAD/VALIDATION HELPERS ---
     generate_sales_template,
@@ -158,7 +159,7 @@ def render_sales_section():
 
     cleaned_df = result.cleaned_df
     st.success("✅ Validation passed. Preview of cleaned Sales data:")
-    st.dataframe(cleaned_df.head(25), width='stretch')
+    st.dataframe(cleaned_df.head(25), use_container_width=True)
 
     st.markdown("---")
 
@@ -291,12 +292,32 @@ def render_customers_section():
             if chain_errors:
                 errors.extend(chain_errors)
 
-            # Hard-stop errors
-            if errors:
+            # Duplicate store number hard stop — must fire before any upload attempt
+            dup_issues = check_duplicate_store_numbers(formatted_df)
+            if dup_issues:
+                st.error("⛔ Upload Blocked — Duplicate Store Numbers Detected")
+                st.markdown(
+                    "The following store numbers appear more than once for the same chain "
+                    "at **different locations**. Resolve in your source application before uploading."
+                )
+                for issue in dup_issues:
+                    with st.expander(
+                        f"⚠️ {issue['chain']} — Store #{issue['store_number']} "
+                        f"({issue['count']} locations found)"
+                    ):
+                        for loc in issue["locations"]:
+                            st.write(
+                                f"📍 {loc['ADDRESS']}, {loc['CITY']} — Rep: {loc['SALESPERSON']}"
+                            )
+                st.warning(
+                    "Resolve duplicate store numbers in your source application before uploading."
+                )
+            # Hard-stop schema/chain errors
+            elif errors:
                 st.error("Validation failed. Please fix these issues and re-upload:")
                 for msg in errors:
                     st.write(f"- {msg}")
-                st.dataframe(formatted_df.head(50), width='stretch')
+                st.dataframe(formatted_df.head(50), use_container_width=True)
             else:
                 # Non-fatal warnings
                 if warnings:
@@ -306,13 +327,32 @@ def render_customers_section():
 
                 # Show preview of what will be loaded
                 st.success("Validation passed. Preview of cleaned Customers data:")
-                st.dataframe(cleaned_df.head(50), width='stretch')
+                st.dataframe(cleaned_df.head(50), use_container_width=True)
 
                 # Final upload button
                 if st.button("Upload Customers to Snowflake", key="upload_customers_btn"):
                     with st.spinner("Uploading Customers to Snowflake..."):
-                        write_customers_to_snowflake(cleaned_df)
-                    st.success("Customers table updated successfully.")
+                        result = write_customers_to_snowflake(cleaned_df)
+                    if result is not None:
+                        st.success("Customers table updated successfully.")
+                        if result["n_changes"] > 0:
+                            st.info(
+                                f"**{result['n_changes']} store(s) reassigned to new salespeople.** "
+                                f"Gap streaks for those stores will reset at the next snapshot. "
+                                f"Email routing is now updated automatically."
+                            )
+                        if result["missing_contacts"]:
+                            missing_list = "\n".join(
+                                f"- {name}" for name in result["missing_contacts"]
+                            )
+                            st.error(
+                                f"**Action required: {len(result['missing_contacts'])} salesperson(s) "
+                                f"are missing from Sales Contacts.**\n\n"
+                                f"These reps have been assigned stores but have no email address on file. "
+                                f"They will NOT receive gap report emails until added to Sales Contacts:\n\n"
+                                f"{missing_list}\n\n"
+                                f"Go to **Admin → Sales Contacts** to add them before the next gap report send."
+                            )
 
         except Exception as e:
             st.error(f"Error validating/uploading Customers: {e}")
@@ -565,11 +605,11 @@ def render_supplier_county_section():
                 st.error("❌ Validation failed:")
                 for e in errors:
                     st.markdown(f"- {e}")
-                st.dataframe(cleaned_df.head(50),  width='stretch')
+                st.dataframe(cleaned_df.head(50),  use_container_width=True)
 
             else:
                 st.success("✅ Validation passed. Preview:")
-                st.dataframe(cleaned_df.head(50),  width='stretch')
+                st.dataframe(cleaned_df.head(50),  use_container_width=True)
                
                
 

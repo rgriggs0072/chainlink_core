@@ -1,216 +1,184 @@
-﻿# utils/dashboard_data/home_dashboard.py
-
+# utils/dashboard_data/home_dashboard.py
 import pandas as pd
 import streamlit as st
 from typing import List
 
 
-
 def _q(*parts: str) -> str:
-    """Snowflake identifier joiner with quoting."""
-    return ".".join([f'"{p}"' for p in parts if p])
+    return ".".join(f'"{p}"' for p in parts if p)
 
 
-def get_execution_summary(conn):
+@st.cache_data(ttl=300, show_spinner=False)
+def get_execution_summary(_conn, tenant_id: str) -> tuple:
     """
-    Home page execution summary (NULL-safe).
-
-    Rules:
-    - PURCHASED_YES_NO can be NULL (no match / no sales). Treat NULL as 0.
-    - TOTAL_GAPS = count of rows where purchased flag is 0 (including NULL).
+    Home page execution summary. Cached per tenant for 5 minutes.
+    Returns (total_in_schematic, purchased, total_gaps, purchased_pct_float).
+    tenant_id is the cache-key discriminator; _conn is excluded from hashing.
     """
-    if not conn:
-        return 0, 0, 0, "0.00"
+    if not _conn:
+        return 0, 0, 0, 0.0
 
     query = """
-        SELECT 
-            SUM("In_Schematic") AS TOTAL_IN_SCHEMATIC,
-            SUM(COALESCE("PURCHASED_YES_NO", 0)) AS PURCHASED,
+        SELECT
+            SUM("In_Schematic")                                             AS TOTAL_IN_SCHEMATIC,
+            SUM(COALESCE("PURCHASED_YES_NO", 0))                            AS PURCHASED,
             SUM(CASE WHEN COALESCE("PURCHASED_YES_NO", 0) = 0 THEN 1 ELSE 0 END) AS TOTAL_GAPS,
-            (SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(COUNT(*),0)) AS PURCHASED_PERCENTAGE
-        FROM GAP_REPORT;
+            SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(COUNT(*), 0)     AS PURCHASED_PERCENTAGE
+        FROM GAP_REPORT
     """
-
-    cursor = conn.cursor()
     try:
-        cursor.execute(query)
-        result = cursor.fetchone()
-        cursor.close()
-
-        if result and any(result):
-            total_in_schematic = result[0] or 0
-            purchased = result[1] or 0
-            total_gaps = result[2] or 0
-            purchased_percentage = result[3] or 0
-            formatted_percentage = purchased_percentage * 100
-
-            return total_in_schematic, purchased, total_gaps, formatted_percentage
-
-        return 0, 0, 0, "0.00"
-
+        with _conn.cursor() as cur:
+            cur.execute(query)
+            row = cur.fetchone()
+        if row and any(row):
+            return (
+                row[0] or 0,
+                row[1] or 0,
+                row[2] or 0,
+                float(row[3] or 0) * 100,
+            )
+        return 0, 0, 0, 0.0
     except Exception as e:
-        st.error(f"Query Error: {str(e)}")
-        return 0, 0, 0, "0.00"
+        st.error(f"Execution summary query error: {e}")
+        return 0, 0, 0, 0.0
 
 
-
-def fetch_chain_schematic_data(conn, tenant_config=None):
-    if tenant_config is None:
-        tenant_config = st.session_state.get("tenant_config")
-    if conn is None or tenant_config is None:
-        st.error("❌ Missing connection or tenant configuration.")
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_chain_schematic_data(_conn, tenant_config: dict) -> pd.DataFrame:
+    """Chain-level in-schematic / purchased summary. Cached for 5 minutes."""
+    if _conn is None or not tenant_config:
         return pd.DataFrame()
     db = tenant_config.get("database")
     sch = tenant_config.get("schema")
     if not db or not sch:
-        st.error("❌ Tenant configuration missing database/schema.")
         return pd.DataFrame()
     query = f"""
-    SELECT
-        CHAIN_NAME,
-        SUM("In_Schematic") AS "Total_In_Schematic",
-        SUM(COALESCE("PURCHASED_YES_NO", 0)) AS "Purchased",
-        COALESCE(
-            SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(SUM("In_Schematic"), 0),
-            0
-        )::FLOAT AS "Purchased_Percentage"
-    FROM "{db}"."{sch}".GAP_REPORT
-    GROUP BY CHAIN_NAME
-    ORDER BY "Purchased_Percentage" DESC;
-"""
-    df = pd.read_sql(query, conn)
-    df["Purchased_Percentage"] = pd.to_numeric(df["Purchased_Percentage"], errors="coerce")
-    return df
-
-
-
-
-
-def fetch_supplier_schematic_summary_data(conn, selected_suppliers):
- 
+        SELECT
+            CHAIN_NAME,
+            SUM("In_Schematic")                                                           AS "Total_In_Schematic",
+            SUM(COALESCE("PURCHASED_YES_NO", 0))                                          AS "Purchased",
+            COALESCE(
+                SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(SUM("In_Schematic"), 0), 0
+            )::FLOAT AS "Purchased_Percentage"
+        FROM {_q(db, sch, "GAP_REPORT")}
+        GROUP BY CHAIN_NAME
+        ORDER BY "Purchased_Percentage" DESC
+    """
     try:
-        if not selected_suppliers:
-            return pd.DataFrame()
-
-        # Quote supplier names for SQL injection safety (this assumes input is clean, trusted)
-        supplier_list = ", ".join(f"'{s}'" for s in selected_suppliers)
-
-        query = f"""
-            SELECT 
-                PRODUCT_NAME,
-                "dg_upc" AS UPC,
-                SUM("In_Schematic") AS "Total_In_Schematic",
-                SUM(COALESCE("PURCHASED_YES_NO", 0)) AS "Total_Purchased",
-                ROUND(
-                    SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(SUM("In_Schematic"), 0) * 100,
-                    2
-                ) AS "Purchased_Percentage"
-            FROM GAP_REPORT_TMP2
-            WHERE "sc_STATUS" = 'Yes'
-              AND SUPPLIER IN ({supplier_list})
-            GROUP BY PRODUCT_NAME, "dg_upc"
-            ORDER BY "Purchased_Percentage" DESC
-        """
+        df = pd.read_sql(query, _conn)
+        df["Purchased_Percentage"] = pd.to_numeric(df["Purchased_Percentage"], errors="coerce")
+        return df
+    except Exception as e:
+        st.error(f"Chain schematic query error: {e}")
+        return pd.DataFrame()
 
 
-        df = pd.read_sql(query, conn)
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_salesperson_execution(_conn, tenant_id: str) -> pd.DataFrame:
+    """Salesperson execution summary. Cached per tenant for 5 minutes."""
+    if not _conn:
+        return pd.DataFrame()
+    query = """
+        SELECT SALESPERSON, TOTAL_DISTRIBUTION, TOTAL_GAPS, EXECUTION_PERCENTAGE
+        FROM SALESPERSON_EXECUTION_SUMMARY
+        ORDER BY TOTAL_GAPS DESC
+    """
+    try:
+        return pd.read_sql(query, _conn)
+    except Exception as e:
+        st.error(f"Salesperson execution query error: {e}")
+        return pd.DataFrame()
 
-        # Clean + Convert
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_gap_history(_conn, tenant_id: str) -> pd.DataFrame:
+    """Gap history pivot data. Cached per tenant for 5 minutes."""
+    if not _conn:
+        return pd.DataFrame()
+    query = """
+        SELECT SALESPERSON, TOTAL_GAPS, EXECUTION_PERCENTAGE, LOG_DATE
+        FROM SALESPERSON_EXECUTION_SUMMARY_TBL
+        ORDER BY TOTAL_GAPS DESC
+    """
+    try:
+        return pd.read_sql(query, _conn)
+    except Exception as e:
+        st.error(f"Gap history query error: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_supplier_schematic_summary_data(_conn, tenant_id: str, selected_suppliers: tuple) -> pd.DataFrame:
+    """
+    Supplier performance scatter data. Cached per tenant for 5 minutes.
+    selected_suppliers must be a tuple (hashable) not a list.
+    """
+    if not _conn or not selected_suppliers:
+        return pd.DataFrame()
+    placeholders = ", ".join(["%s"] * len(selected_suppliers))
+    query = f"""
+        SELECT
+            PRODUCT_NAME,
+            "dg_upc"                                                                  AS UPC,
+            SUM("In_Schematic")                                                       AS "Total_In_Schematic",
+            SUM(COALESCE("PURCHASED_YES_NO", 0))                                      AS "Total_Purchased",
+            ROUND(
+                SUM(COALESCE("PURCHASED_YES_NO", 0)) / NULLIF(SUM("In_Schematic"), 0) * 100,
+                2
+            )                                                                         AS "Purchased_Percentage"
+        FROM GAP_REPORT_TMP2
+        WHERE "sc_STATUS" = 'Yes'
+          AND SUPPLIER IN ({placeholders})
+        GROUP BY PRODUCT_NAME, "dg_upc"
+        ORDER BY "Purchased_Percentage" DESC
+    """
+    try:
+        with _conn.cursor() as cur:
+            cur.execute(query, list(selected_suppliers))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+        df = pd.DataFrame(rows, columns=cols)
         for col in ["Total_In_Schematic", "Total_Purchased", "Purchased_Percentage"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-
         return df
-
     except Exception as e:
-        st.error("❌ Failed to fetch supplier schematic summary data")
-        st.exception(e)
+        st.error(f"Supplier scatter query error: {e}")
         return pd.DataFrame()
-
 
 
 def create_gap_report(conn, salesperson: str, chain: str, supplier: str) -> pd.DataFrame:
     try:
-        # Step 1: Trigger stored procedure
         with conn.cursor() as cur:
             cur.execute("CALL PROCESS_GAP_REPORT()")
-
-        # Step 2: Build query dynamically with filters
         query = "SELECT * FROM GAP_REPORT WHERE 1=1"
+        params = []
         if salesperson != "All":
-            query += f" AND SALESPERSON = '{salesperson}'"
+            query += " AND SALESPERSON = %s"
+            params.append(salesperson)
         if chain != "All":
-            query += f" AND CHAIN_NAME = '{chain}'"
+            query += " AND CHAIN_NAME = %s"
+            params.append(chain)
         if supplier != "All":
-            query += f" AND SUPPLIER = '{supplier}'"
-
-        return pd.read_sql(query, conn)
+            query += " AND SUPPLIER = %s"
+            params.append(supplier)
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+        return pd.DataFrame(rows, columns=cols)
     except Exception as e:
-        st.error("❌ Failed to generate Gap Report")
-        st.exception(e)
+        st.error(f"Gap report error: {e}")
         return pd.DataFrame()
 
 
-def fetch_distinct_values(conn, table_name, column_name):
+def fetch_distinct_values(conn, table_name: str, column_name: str) -> List:
     try:
-        cur = conn.cursor()
-        query = f"SELECT DISTINCT {column_name} FROM {table_name} ORDER BY {column_name}"
-        cur.execute(query)
-        results = [row[0] for row in cur.fetchall()]
-        cur.close()
-        return results
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT DISTINCT {column_name} FROM {table_name} ORDER BY {column_name}")
+            return [row[0] for row in cur.fetchall()]
     except Exception as e:
-        return [f"⚠ Error: {e}"]
-
-
-
-def get_execution_summary(conn):
-    if not conn:
-        return 0, 0, 0, "0.00"
-
-    cursor = conn.cursor()
-    query = """
-        SELECT 
-            SUM("In_Schematic") AS TOTAL_IN_SCHEMATIC,
-            SUM("PURCHASED_YES_NO") AS PURCHASED,
-            (SUM("PURCHASED_YES_NO") / NULLIF(COUNT(*),0)) AS PURCHASED_PERCENTAGE
-        FROM GAP_REPORT;
-    """
-
-    try:
-        cursor.execute(query)
-        result = cursor.fetchone()
-        cursor.close()
-       # conn.close()
-
-        if result and any(result):
-            total_in_schematic = result[0] or 0
-            purchased = result[1] or 0
-            purchased_percentage = result[2] or 0
-            formatted_percentage = purchased_percentage * 100
-
-            total_gaps = total_in_schematic - purchased
-
-            return total_in_schematic, purchased, total_gaps, formatted_percentage
-        else:
-            return 0, 0, 0, "0.00"
-    except Exception as e:
-       
-        st.error(f"Query Error: {str(e)}")
-        return 0, 0, 0, "0.00"
-
-
-
-def fetch_salesperson_summary(conn):
-  
-    # TODO: Replace with actual query logic
-    data = [
-        {"SALESPERSON": "Alice", "TOTAL_DISTRIBUTION": 100, "TOTAL_GAPS": 10, "EXECUTION_PERCENTAGE": 90},
-        {"SALESPERSON": "Bob", "TOTAL_DISTRIBUTION": 80, "TOTAL_GAPS": 20, "EXECUTION_PERCENTAGE": 75}
-    ]
-    return pd.DataFrame(data)
-
-
+        return [f"Error: {e}"]
 
 
 def fetch_supplier_names(conn) -> List[str]:
@@ -219,6 +187,5 @@ def fetch_supplier_names(conn) -> List[str]:
         df = pd.read_sql(query, conn)
         return df["SUPPLIER"].dropna().tolist()
     except Exception as e:
-        st.error("❌ Failed to fetch supplier names")
-        st.exception(e)
+        st.error(f"Failed to fetch supplier names: {e}")
         return []

@@ -60,11 +60,11 @@ def render_supplier_scatter(df_supplier: pd.DataFrame) -> None:
                 ),
             ],
         )
-        .properties(width=800, height=400, background="#F8F2EB")
+        .properties(width=800, height=400, background="#FFFFFF")
         .interactive()
     )
 
-    st.altair_chart(scatter_chart, width='stretch')
+    st.altair_chart(scatter_chart, use_container_width=True)
 
 
 
@@ -90,7 +90,7 @@ def render_execution_summary_card(
     container.markdown(
         f"""
         <div style="
-            background-color: #F8F2EB;
+            background-color: #F1F5F9;
             border: 2px solid #ccc;
             border-radius: 10px;
             padding: 20px;
@@ -138,8 +138,8 @@ def render_chain_bar_chart(container, df: pd.DataFrame) -> None:
                 "Purchased_Percentage",
             ],
         )
-        .properties(width=500, height=300, background="#F8F2EB")
+        .properties(width=500, height=300, background="#FFFFFF")
     )
 
-    container.altair_chart(chart, width='stretch')
+    container.altair_chart(chart, use_container_width=True)
 
