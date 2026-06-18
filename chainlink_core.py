@@ -513,7 +513,7 @@ def main():
             t1, t2, t3 = st.tabs([
                 "⚙️  Admin Dashboard",
                 "👤  Sales Contacts Admin",
-                "🔬  UPC Validation",
+                "🔬  UPC Diagnostic",
             ])
             with t1:
                 _safe_import("app_pages.admin").render()

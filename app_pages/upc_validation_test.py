@@ -1,12 +1,11 @@
 # app_pages/upc_validation_test.py
 """
-Admin-only UPC Validation Test Page
+Chainlink UPC Diagnostic Tool — Admin Page
 
 Pulls all products from PRODUCTS, normalizes each CARRIER_UPC, validates the
 GS1 check digit, then hits Open Food Facts to confirm the barcode is live.
 
-Temporary diagnostic tool — remove or gate behind a feature flag once the
-underlying PRODUCTS data quality is confirmed clean.
+Permanent admin feature for validating PRODUCTS UPC data quality.
 """
 
 import time
@@ -90,11 +89,11 @@ def render() -> None:
     conn      = st.session_state.get("conn")
     tenant_id = st.session_state.get("tenant_id")
 
-    st.title("🔬 UPC Validation Test")
+    st.title("🔬 Chainlink UPC Diagnostic Tool")
     st.caption(
         "Pulls every product from PRODUCTS, normalizes the CARRIER_UPC, "
         "validates the GS1 check digit, and confirms the barcode against "
-        "Open Food Facts. Temporary diagnostic tool."
+        "Open Food Facts."
     )
 
     if not conn or not tenant_id:
