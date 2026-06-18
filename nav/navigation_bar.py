@@ -252,13 +252,10 @@ def render_sidebar_navigation(
         handle_logout(authenticator)
 
         st.markdown("<br>", unsafe_allow_html=True)
-        env_icons = {"local": "[L]", "dev": "[D]", "production": ""}
-        env_label = f"{env_icons.get(app_env, '')} {app_env.upper()}" if app_env != "production" else ""
         st.markdown(
             f'<div class="cl-footer">'
             f'{"v" + app_version + "<br>" if app_version else ""}'
-            f'{env_label + "<br>" if env_label else ""}'
-            f'© 2025 Chainlink Analytics LLC</div>',
+            f'© 2026 Chainlink Analytics LLC</div>',
             unsafe_allow_html=True,
         )
 
