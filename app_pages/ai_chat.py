@@ -36,10 +36,10 @@ def render() -> None:
     # ── Header ─────────────────────────────────────────────────────────────────
     col_title, col_clear = st.columns([5, 1])
     with col_title:
-        st.markdown("## Claude")
+        st.markdown("## Chainlink AI")
         st.markdown(
             "<p style='color:#64748B;margin-top:-0.5rem;font-size:0.9rem;'>"
-            "Ask anything about your data. Claude queries Snowflake directly."
+            "Ask anything about your data. Chainlink AI queries Snowflake directly."
             "</p>",
             unsafe_allow_html=True,
         )
@@ -65,7 +65,7 @@ def render() -> None:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Claude is thinking..."):
+            with st.spinner("Chainlink AI is thinking..."):
                 try:
                     text, frames = run_chat_turn(
                         user_message=prompt,

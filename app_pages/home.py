@@ -59,7 +59,7 @@ _SEVERITY_ICON = {
 }
 
 
-@st.dialog("💡 What Claude Noticed", width="large")
+@st.dialog("💡 What Chainlink AI Noticed", width="large")
 def _insights_dialog(insights: list[dict]) -> None:
     if not insights:
         st.info("Not enough data to surface meaningful insights right now.")
@@ -128,7 +128,7 @@ def render() -> None:
         )
     with btn_col:
         st.markdown("<div style='padding-top:1.6rem'>", unsafe_allow_html=True)
-        if st.button("💡 What Claude Noticed", width='stretch', key="btn_ai_insights"):
+        if st.button("💡 What Chainlink AI Noticed", width='stretch', key="btn_ai_insights"):
             _insights_dialog(st.session_state["ai_home_insights"])
         st.markdown("</div>", unsafe_allow_html=True)
 
