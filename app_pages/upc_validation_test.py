@@ -245,16 +245,16 @@ def render() -> None:
     dl1, dl2 = st.columns(2)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     dl1.download_button(
-        label="📥 Download Results (Excel)",
+        label=f"⬇️ Download Full Results (Excel) — all {total_products:,} products",
         data=_to_excel(results_df),
         file_name=f"upc_validation_{ts}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
     dl2.download_button(
-        label="⬇️ Download Results (CSV)",
-        data=results_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"upc_validation_{ts}.csv",
+        label=f"⬇️ Download Problems Only (CSV) — {len(problem_df):,} products needing review",
+        data=problem_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"upc_problems_{ts}.csv",
         mime="text/csv",
         width="stretch",
     )
