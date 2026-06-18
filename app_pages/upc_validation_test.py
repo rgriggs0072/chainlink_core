@@ -28,14 +28,25 @@ _REQUEST_TIMEOUT = 6  # seconds
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _verify_check_digit(upc12: str) -> bool:
-    if len(upc12) != 12 or not upc12.isdigit():
+def _verify_check_digit(upc_str: str) -> bool:
+    """Validate check digit — handles UPC-A (12-digit) and EAN-13 (13-digit)."""
+    if not upc_str.isdigit():
         return False
-    odd_sum  = sum(int(upc12[i]) for i in range(0, 11, 2))
-    even_sum = sum(int(upc12[i]) for i in range(1, 10, 2))
-    total    = (odd_sum * 3) + even_sum
-    expected = (10 - (total % 10)) % 10
-    return int(upc12[11]) == expected
+    if len(upc_str) == 12:
+        digits   = [int(d) for d in upc_str]
+        odd_sum  = sum(digits[i] for i in range(0, 11, 2))
+        even_sum = sum(digits[i] for i in range(1, 11, 2))
+        total    = (odd_sum * 3) + even_sum
+        expected = (10 - (total % 10)) % 10
+        return digits[11] == expected
+    if len(upc_str) == 13:
+        digits   = [int(d) for d in upc_str]
+        odd_sum  = sum(digits[i] for i in range(0, 12, 2))
+        even_sum = sum(digits[i] for i in range(1, 12, 2))
+        total    = odd_sum + (even_sum * 3)
+        expected = (10 - (total % 10)) % 10
+        return digits[12] == expected
+    return False
 
 
 def _fetch_off(upc: str) -> dict:
