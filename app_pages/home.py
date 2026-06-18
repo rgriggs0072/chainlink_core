@@ -128,7 +128,7 @@ def render() -> None:
         )
     with btn_col:
         st.markdown("<div style='padding-top:1.6rem'>", unsafe_allow_html=True)
-        if st.button("💡 What Claude Noticed", use_container_width=True, key="btn_ai_insights"):
+        if st.button("💡 What Claude Noticed", width='stretch', key="btn_ai_insights"):
             _insights_dialog(st.session_state["ai_home_insights"])
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -208,7 +208,7 @@ def render() -> None:
                     .properties(height=250)
                     .configure_title(align="center", fontSize=16)
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width='stretch')
             else:
                 st.warning("No chain summary data available.")
 

@@ -159,7 +159,7 @@ def render_sales_section():
 
     cleaned_df = result.cleaned_df
     st.success("✅ Validation passed. Preview of cleaned Sales data:")
-    st.dataframe(cleaned_df.head(25), use_container_width=True)
+    st.dataframe(cleaned_df.head(25), width='stretch')
 
     st.markdown("---")
 
@@ -317,7 +317,7 @@ def render_customers_section():
                 st.error("Validation failed. Please fix these issues and re-upload:")
                 for msg in errors:
                     st.write(f"- {msg}")
-                st.dataframe(formatted_df.head(50), use_container_width=True)
+                st.dataframe(formatted_df.head(50), width='stretch')
             else:
                 # Non-fatal warnings
                 if warnings:
@@ -327,7 +327,7 @@ def render_customers_section():
 
                 # Show preview of what will be loaded
                 st.success("Validation passed. Preview of cleaned Customers data:")
-                st.dataframe(cleaned_df.head(50), use_container_width=True)
+                st.dataframe(cleaned_df.head(50), width='stretch')
 
                 # Final upload button
                 if st.button("Upload Customers to Snowflake", key="upload_customers_btn"):
@@ -605,11 +605,11 @@ def render_supplier_county_section():
                 st.error("❌ Validation failed:")
                 for e in errors:
                     st.markdown(f"- {e}")
-                st.dataframe(cleaned_df.head(50),  use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
 
             else:
                 st.success("✅ Validation passed. Preview:")
-                st.dataframe(cleaned_df.head(50),  use_container_width=True)
+                st.dataframe(cleaned_df.head(50),  width='stretch')
                
                
 

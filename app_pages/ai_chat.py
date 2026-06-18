@@ -45,7 +45,7 @@ def render() -> None:
         )
     with col_clear:
         st.markdown("<div style='padding-top:1.75rem;'>", unsafe_allow_html=True)
-        if st.button("Clear", type="secondary", use_container_width=True):
+        if st.button("Clear", type="secondary", width='stretch'):
             st.session_state["ai_chat_api_messages"] = []
             st.session_state["ai_chat_display"] = []
             st.rerun()
@@ -56,7 +56,7 @@ def render() -> None:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             for df in msg.get("frames", []):
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
 
     # ── Handle new input ───────────────────────────────────────────────────────
     if prompt := st.chat_input("Ask about your data..."):
@@ -80,6 +80,6 @@ def render() -> None:
 
             st.markdown(text)
             for df in frames:
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
 
         display_msgs.append({"role": "assistant", "content": text, "frames": frames})

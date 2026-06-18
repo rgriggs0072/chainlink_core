@@ -259,7 +259,7 @@ def render():
 
         # --- Display results ---
         st.success(f"Forecast generated for **{salesperson}**, starting {anchor_date:%b %d, %Y}")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
         # --- Download CSV ---
         csv = df.to_csv(index=False).encode("utf-8")

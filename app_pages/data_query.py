@@ -503,9 +503,9 @@ def render():
 
     col_run, col_clear = st.columns([1, 1])
     with col_run:
-        run = st.button("▶ Run Query", type="primary", use_container_width=True)
+        run = st.button("▶ Run Query", type="primary", width='stretch')
     with col_clear:
-        if st.button("✕ Clear", type="secondary", use_container_width=True):
+        if st.button("✕ Clear", type="secondary", width='stretch'):
             for key in ["dq_question", "dq_result", "dq_sql", "dq_row_count",
                         "dq_capped", "dq_input", "dq_intent", "dq_supplier",
                         "dq_diagnosis", "dq_diagnosis_counts"]:
@@ -661,7 +661,7 @@ def render():
             else:
                 st.success(f"**{len(df):,} row(s)** returned.")
 
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
 
             st.download_button(
                 "⬇️ Download Results as CSV",

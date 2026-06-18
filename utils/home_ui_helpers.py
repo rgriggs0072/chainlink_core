@@ -64,7 +64,7 @@ def render_supplier_scatter(df_supplier: pd.DataFrame) -> None:
         .interactive()
     )
 
-    st.altair_chart(scatter_chart, use_container_width=True)
+    st.altair_chart(scatter_chart, width='stretch')
 
 
 
@@ -141,5 +141,5 @@ def render_chain_bar_chart(container, df: pd.DataFrame) -> None:
         .properties(width=500, height=300, background="#FFFFFF")
     )
 
-    container.altair_chart(chart, use_container_width=True)
+    container.altair_chart(chart, width='stretch')
 
