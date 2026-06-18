@@ -510,14 +510,17 @@ def main():
             if not is_admin:
                 st.warning("You don't have access to Admin.")
                 st.stop()
-            t1, t2 = st.tabs([
+            t1, t2, t3 = st.tabs([
                 "⚙️  Admin Dashboard",
                 "👤  Sales Contacts Admin",
+                "🔬  UPC Validation",
             ])
             with t1:
                 _safe_import("app_pages.admin").render()
             with t2:
                 _safe_import("app_pages.sales_contacts_admin").render()
+            with t3:
+                _safe_import("app_pages.upc_validation_test").render()
 
         else:
             st.warning("Unknown menu selection.")
