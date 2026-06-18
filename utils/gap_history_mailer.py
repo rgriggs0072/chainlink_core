@@ -667,7 +667,10 @@ def send_gap_history_pdfs(
     # -----------------------------
     # Pre-send validation gate
     # -----------------------------
-    missing_contacts = validate_contacts_before_send(con, tenant_id, streaks_df)
+    try:
+        missing_contacts = validate_contacts_before_send(con, tenant_id, streaks_df)
+    except Exception:
+        missing_contacts = []
     if missing_contacts:
         missing_list = ", ".join(missing_contacts)
         return {
