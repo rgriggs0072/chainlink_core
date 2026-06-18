@@ -79,7 +79,9 @@ def create_gap_report(
     cur = conn.cursor()
     try:
         cur.execute(sql, tuple(params))
-        df = cur.fetch_pandas_all()
+        rows = cur.fetchall()
+        cols = [desc[0] for desc in cur.description]
+        df = pd.DataFrame(rows, columns=cols)
     finally:
         cur.close()
 
