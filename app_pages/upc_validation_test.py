@@ -89,9 +89,10 @@ def render() -> None:
     conn      = st.session_state.get("conn")
     tenant_id = st.session_state.get("tenant_id")
 
-    # Persist results across reruns triggered by progress bar updates
     if "validation_results" not in st.session_state:
         st.session_state.validation_results = None
+    if "validation_check_off" not in st.session_state:
+        st.session_state.validation_check_off = False
 
     st.title("🔬 Chainlink UPC Diagnostic Tool")
     st.caption(
@@ -107,11 +108,16 @@ def render() -> None:
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
+    check_off = st.checkbox(
+        "Check against Barcode Database (requires internet — slower)",
+        value=False,
+    )
+
     btn_col, clear_col = st.columns([4, 1])
     with btn_col:
         run_clicked = st.button("▶ Run Validation", type="primary", width="stretch")
     with clear_col:
-        if st.button("🔄 Clear", width="stretch") :
+        if st.button("🔄 Clear", width="stretch"):
             st.session_state.validation_results = None
             st.rerun()
 
@@ -119,6 +125,8 @@ def render() -> None:
     # Validation (only runs when button is clicked)
     # ------------------------------------------------------------------
     if run_clicked:
+        st.session_state.validation_check_off = check_off
+
         with st.spinner("Loading products from Snowflake…"):
             df = _load_products(conn, tenant_id)
 
@@ -126,7 +134,10 @@ def render() -> None:
             st.warning("No products found for this tenant.")
             st.session_state.validation_results = None
         else:
-            st.info(f"Found **{len(df):,}** products. Querying barcode database — this may take a minute.")
+            if check_off:
+                st.info(f"Found **{len(df):,}** products. Querying barcode database — this may take a minute.")
+            else:
+                st.info(f"Found **{len(df):,}** products. Running check digit validation…")
 
             results = []
             progress = st.progress(0, text="Starting…")
@@ -138,27 +149,28 @@ def render() -> None:
                 upc_12     = calculate_upc_check_digit(normalized) if normalized else ""
                 check_ok   = _verify_check_digit(upc_12)
 
-                off = _fetch_off(upc_12) if upc_12 else {
-                    "off_found": False, "off_product_name": "", "off_brand": "", "off_barcode": ""
-                }
+                if check_off and upc_12:
+                    off = _fetch_off(upc_12)
+                    time.sleep(0.3)
+                else:
+                    off = {"off_found": None, "off_product_name": "", "off_brand": "", "off_barcode": ""}
 
                 results.append({
-                    "PRODUCT_ID":          row.PRODUCT_ID,
-                    "SUPPLIER":            row.SUPPLIER,
-                    "PRODUCT_NAME":        row.PRODUCT_NAME,
-                    "PACKAGE":             row.PACKAGE,
-                    "RAW_UPC":             raw_upc,
-                    "NORMALIZED_UPC":      normalized,
-                    "UPC_12":              upc_12,
-                    "CHECK_DIGIT_OK":      check_ok,
-                    "BARCODE_DB_FOUND":    off["off_found"],
-                    "BARCODE_DB_NAME":     off["off_product_name"],
-                    "BARCODE_DB_BRAND":    off["off_brand"],
-                    "BARCODE_DB_CODE":     off["off_barcode"],
+                    "PRODUCT_ID":       row.PRODUCT_ID,
+                    "SUPPLIER":         row.SUPPLIER,
+                    "PRODUCT_NAME":     row.PRODUCT_NAME,
+                    "PACKAGE":          row.PACKAGE,
+                    "RAW_UPC":          raw_upc,
+                    "NORMALIZED_UPC":   normalized,
+                    "UPC_12":           upc_12,
+                    "CHECK_DIGIT_OK":   check_ok,
+                    "BARCODE_DB_FOUND": off["off_found"],
+                    "BARCODE_DB_NAME":  off["off_product_name"],
+                    "BARCODE_DB_BRAND": off["off_brand"],
+                    "BARCODE_DB_CODE":  off["off_barcode"],
                 })
 
                 progress.progress(i / total, text=f"{i}/{total} — {row.PRODUCT_NAME[:40]}")
-                time.sleep(0.3)
 
             progress.empty()
             st.session_state.validation_results = pd.DataFrame(results)
@@ -169,7 +181,8 @@ def render() -> None:
     if st.session_state.validation_results is None:
         return
 
-    results_df = st.session_state.validation_results
+    results_df   = st.session_state.validation_results
+    ran_with_off = st.session_state.get("validation_check_off", False)
 
     # 1. Summary stats
     total_products  = len(results_df)
@@ -181,42 +194,46 @@ def render() -> None:
         & results_df["NORMALIZED_UPC"].ne("")
     ).sum()
 
-    db_not_found = results_df["BARCODE_DB_FOUND"].eq(False).sum()
-    db_error     = results_df["BARCODE_DB_FOUND"].isna().sum()
-
     st.markdown("---")
     st.subheader("Summary")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Products",               total_products)
-    c2.metric("✅ Valid UPCs",                int(valid_upc_count - corrected_count))
-    c3.metric("🔧 Check Digit Corrected",     int(corrected_count))
-    c4.metric("❌ Not Found in Barcode DB",   int(db_not_found))
-    c5.metric("⚠️ Blank / Null UPC",         int(blank_upc_count))
-
-    if db_error == total_products:
-        st.info(
-            "ℹ️ Barcode database validation requires an outbound internet connection. "
-            "Check digit validation and blank UPC detection ran successfully."
-        )
-    elif db_error:
-        st.warning(
-            f"{db_error} product(s) could not be checked against the barcode database "
-            "(network connection required)."
-        )
+    if ran_with_off:
+        db_not_found = results_df["BARCODE_DB_FOUND"].eq(False).sum()
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total Products",             total_products)
+        c2.metric("✅ Valid UPCs",              int(valid_upc_count - corrected_count))
+        c3.metric("🔧 Check Digit Corrected",   int(corrected_count))
+        c4.metric("❌ Not Found in Barcode DB", int(db_not_found))
+        c5.metric("⚠️ Blank / Null UPC",       int(blank_upc_count))
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Products",           total_products)
+        c2.metric("✅ Valid UPCs",            int(valid_upc_count - corrected_count))
+        c3.metric("🔧 Check Digit Corrected", int(corrected_count))
+        c4.metric("⚠️ Blank / Null UPC",     int(blank_upc_count))
 
     # 2. Problem rows
     st.markdown("---")
     st.subheader("Results")
 
-    problem_df = results_df[
-        ~results_df["CHECK_DIGIT_OK"]
-        | ~results_df["BARCODE_DB_FOUND"].eq(True)
-        | results_df["NORMALIZED_UPC"].eq("")
-    ]
+    if ran_with_off:
+        is_problem = (
+            ~results_df["CHECK_DIGIT_OK"]
+            | ~results_df["BARCODE_DB_FOUND"].eq(True)
+            | results_df["NORMALIZED_UPC"].eq("")
+        )
+        problem_label = "bad check digit, not in barcode database, or blank UPC"
+    else:
+        is_problem = (
+            ~results_df["CHECK_DIGIT_OK"]
+            | results_df["NORMALIZED_UPC"].eq("")
+        )
+        problem_label = "bad check digit or blank UPC"
+
+    problem_df = results_df[is_problem]
     if not problem_df.empty:
         with st.expander(
-            f"⚠️ {len(problem_df)} problem rows (bad check digit, not in barcode database, or blank UPC)",
+            f"⚠️ {len(problem_df)} problem rows ({problem_label})",
             expanded=True,
         ):
             st.dataframe(problem_df, width="stretch", hide_index=True)
