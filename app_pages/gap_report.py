@@ -25,7 +25,6 @@ Key rule:
 """
 
 import os
-import traceback
 from datetime import datetime
 
 import pandas as pd
@@ -166,12 +165,7 @@ def render():
     # Generate report
     # ------------------------------------------------------------------
     with st.spinner("Generating report..."):
-        try:
-            temp_file_path = create_gap_report(conn, salesperson, store, supplier)
-        except Exception as e:
-            st.error(f"❌ Gap report build failed: {e}")
-            st.code(traceback.format_exc())
-            return
+        temp_file_path = create_gap_report(conn, salesperson, store, supplier)
 
         if not temp_file_path or not os.path.exists(temp_file_path):
             st.error("❌ Report generation failed (no file produced).")

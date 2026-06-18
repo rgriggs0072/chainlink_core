@@ -1,7 +1,5 @@
 ﻿# ---------------- utils/reports_utils.py ----------------
 
-import traceback
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -55,5 +53,4 @@ def create_gap_report(conn, salesperson, chain, supplier):
         )
     except Exception as e:
         st.error(f"❌ Gap report build failed: {e}")
-        st.code(traceback.format_exc())
         return None
