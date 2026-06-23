@@ -9,6 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 > Work in progress on `dev` branch. Move items here to the next version block on release.
 
+### In Progress
+- Distro Grid template simplification — reducing standard upload template
+  to mandatory fields only (STORE_NUMBER, UPC, PRODUCT_NAME, YES_NO);
+  pivot template reduced to (UPC, Name, store columns); SKU and
+  ACTIVATION_STATUS dropped from DISTRO_GRID table; code audit underway
+  prior to implementation
+
 ### New Features
 - None
 
