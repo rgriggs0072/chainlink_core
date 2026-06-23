@@ -17,7 +17,7 @@ def load_logo(full_path, max_width):
         return img.resize((max_width, new_height))
     except Exception as e:
         if "logo_warned" not in st.session_state:
-            print(f"⚠️ Failed to load logo at {full_path}: {e}")
+            print(f"[logo] Failed to load logo at {full_path}: {e}")
             st.session_state["logo_warned"] = True
         return None
 
@@ -31,7 +31,7 @@ def add_logo(logo_path, width=240):  # Width only — height is auto-computed
     full_path = os.path.join(os.getcwd(), logo_path)
 
     if "logo_printed" not in st.session_state:
-        print(f"🔍 Trying to load logo at: {full_path}")
+        print(f"[logo] Trying to load logo at: {full_path}")
         st.session_state["logo_printed"] = True
 
     image = load_logo(full_path, width)

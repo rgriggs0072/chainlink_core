@@ -437,7 +437,7 @@ def _render_bulk_upload(conn, tenant_id: int):
         st.warning(w)
 
     st.markdown("Preview (normalized)")
-    st.dataframe(df_preview, width="stretch")
+    st.dataframe(df_preview, width='stretch')
 
     confirm = st.text_input("Type APPLY to confirm bulk upsert", value="", key="sc_bulk_apply_confirm")
     apply_disabled = confirm.strip().upper() != "APPLY"

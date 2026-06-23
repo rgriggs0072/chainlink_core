@@ -1,4 +1,4 @@
-﻿# app_pages/driver_forecast.py
+# app_pages/driver_forecast.py
 # -*- coding: utf-8 -*-
 """
 Truck Forecast Load Plan

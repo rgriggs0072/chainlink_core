@@ -2,5 +2,11 @@
 showSidebarNavigation = false
 
 [theme]
-secondaryBackgroundColor = "#F8F2EB"
+primaryColor = "#6497D6"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#1E293B"
+font = "sans serif"
 
+[server]
+maxUploadSize = 25

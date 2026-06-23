@@ -1,4 +1,4 @@
-﻿# ------------------------------------------- predictive_purchases.py ------------------------------------------------------
+# ------------------------------------------- predictive_purchases.py ------------------------------------------------------
 """
 Predictive Purchases Page
 - Admin uploads sales file → loads RAW → aggregates WEEKLY → runs forecasts.

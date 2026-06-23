@@ -44,6 +44,7 @@ from utils.distro_grid_helpers import (
     update_spinner,  # spinner callback for upload
 )
 from utils.snowflake_utils import fetch_distinct_values
+from utils.load_company_data_helpers import load_chain_stores, validate_and_enrich_chain_file
 
 
 # ---------------------------------------------------------------------
@@ -91,8 +92,10 @@ def _validate_chain_in_df(df: pd.DataFrame, selected_chain: str, context: str) -
         .str.upper()
     )
 
+    # Exclude empty/NaN cells (become "NAN" or "" after astype(str).str.upper()).
+    # format_uploaded_grid() fills those from the dropdown — not a mismatch.
     mismatched = df_chain[
-        df_chain[chain_col].notna()
+        ~df_chain[chain_col].isin({"NAN", ""})
         & (df_chain[chain_col] != selected_chain_clean)
     ]
 
@@ -238,11 +241,33 @@ def render_distro_grid_formatter_section():
                 chain_name=selected_chain,
             )
 
+            # STORE_NUMBER / STORE_NAME enrichment from CUSTOMERS
+            conn = st.session_state.get("conn")
+            tenant_id = st.session_state.get("tenant_id")
+            chain_store_lookup = load_chain_stores(conn, tenant_id, selected_chain.strip().upper())
+            if chain_store_lookup:
+                formatted_df, enrich_errors, enrich_warnings = validate_and_enrich_chain_file(
+                    formatted_df, selected_chain.strip().upper(), chain_store_lookup
+                )
+                if enrich_errors:
+                    for err in enrich_errors:
+                        st.error(err)
+                    return
+                for warn in enrich_warnings:
+                    st.warning(warn)
+
             # Build downloadable Excel file from formatted DataFrame
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 formatted_df.to_excel(writer, index=False)
             buffer.seek(0)
+
+        st.info(
+            f"**📋 Format Summary**\n\n"
+            f"- **Chain:** {selected_chain}\n"
+            f"- **Records:** {len(formatted_df):,}\n\n"
+            f"⚠️ If you selected the wrong chain, stop here and re-select before downloading."
+        )
 
         # Download button for the formatted file
         st.download_button(

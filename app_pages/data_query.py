@@ -128,6 +128,9 @@ SALES_REPORT (alias: SR):
   STORE_NUMBER, STORE_NAME, ADDRESS, CHAIN_NAME, UPC, PRODUCT_NAME,
   SALESPERSON, PURCHASED_YES_NO, SALE_DATE, TENANT_ID,
   CREATED_AT, LAST_LOAD_DATE
+  LAST_LOAD_DATE: the date this data was uploaded/loaded into Snowflake.
+    Use this for questions like "when was the last upload?" or "when was data last loaded?"
+  SALE_DATE: the transaction date from the source file — may be NULL if not captured in the upload.
   NOTE: There is NO COUNTY column in SALES_REPORT. Do not reference SR.COUNTY.
 
 KEY RELATIONSHIPS:
@@ -470,11 +473,13 @@ def render():
         "Queries are read-only and tenant-scoped."
     )
 
-    # ── Load chain names dynamically ──────────────────────────────────────────
-    try:
-        chain_names = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
-    except Exception:
-        chain_names = []
+    # ── Load chain names (cached in session_state to avoid repeated DB hits) ──
+    if "dq_chain_names" not in st.session_state:
+        try:
+            st.session_state["dq_chain_names"] = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
+        except Exception:
+            st.session_state["dq_chain_names"] = []
+    chain_names = st.session_state["dq_chain_names"]
 
     schema_context = _build_schema_context(chain_names)
 
@@ -498,9 +503,9 @@ def render():
 
     col_run, col_clear = st.columns([1, 1])
     with col_run:
-        run = st.button("▶ Run Query", type="primary", use_container_width=True)
+        run = st.button("▶ Run Query", type="primary", width='stretch')
     with col_clear:
-        if st.button("✕ Clear", type="secondary", use_container_width=True):
+        if st.button("✕ Clear", type="secondary", width='stretch'):
             for key in ["dq_question", "dq_result", "dq_sql", "dq_row_count",
                         "dq_capped", "dq_input", "dq_intent", "dq_supplier",
                         "dq_diagnosis", "dq_diagnosis_counts"]:
@@ -656,7 +661,7 @@ def render():
             else:
                 st.success(f"**{len(df):,} row(s)** returned.")
 
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
 
             st.download_button(
                 "⬇️ Download Results as CSV",

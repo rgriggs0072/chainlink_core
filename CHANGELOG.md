@@ -13,7 +13,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - None
 
 ### Bug Fixes
-- Fix Customers, Products, and Sales Report uploads failing with `NP.INT64` SQL error after pandas 2.x upgrade — explicit `int()` and `str()` casts added to all `executemany` record builders in `write_customers_to_snowflake()`, `write_products_to_snowflake()`, and `write_salesreport_to_snowflake()` to convert numpy types to native Python types before passing to Snowflake connector
+- None
 
 ### UI Changes
 - None
@@ -24,13 +24,169 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Breaking Changes
 - None
 
+---
+
+## [v1.6.4] — 2026-06-23
+
+### New Features
+- Add **Chainlink UPC Diagnostic Tool** — new admin-only page wired as the 3rd tab (🔬 UPC Diagnostic) in the Admin section; validates every product UPC in the tenant catalog: normalizes formats via `normalize_upc()`, verifies GS1 check digits for both UPC-A (12-digit) and EAN-13 (13-digit) barcodes, and optionally checks each barcode against the Open Food Facts database; results persist in session state across reruns
+- UPC Diagnostic Tool — optional **Barcode Database check** (checkbox, unchecked by default); when unchecked, only check digit validation and blank UPC detection run (faster, no internet required); when checked, full validation including barcode DB lookup runs with a progress bar
+- UPC Diagnostic Tool — **summary metrics** strip shows: Total Products / ✅ Valid UPCs / 🔧 Check Digit Corrected / ⚠️ Blank/Null UPC; adds ❌ Not Found in Barcode DB metric only when the barcode check was run
+- UPC Diagnostic Tool — **problem rows expander** auto-opened, label dynamically lists the count and which checks failed (check digit, barcode DB, or blank UPC); adjusts based on whether barcode DB check was run
+- UPC Diagnostic Tool — **dual download buttons** with live row counts: "⬇️ Download Full Results (Excel) — all N products" (all rows) and "⬇️ Download Problems Only (CSV) — N products needing review" (problem rows only); timestamped filenames
+
+### Bug Fixes
+- Fix UPC Diagnostic Tool incorrectly flagging valid EAN-13 barcodes as bad check digit — `_verify_check_digit()` now handles both UPC-A (12-digit: odd×3 + even×1) and EAN-13 (13-digit: odd×1 + even×3) algorithms; previously all barcodes were validated as UPC-A, causing false failures on imported products (e.g. Craft Spirits Coop)
+- Fix UPC Diagnostic Tool results disappearing on rerun — results now stored in `st.session_state.validation_results` so the display section survives widget interaction reruns without re-running validation
+
+### UI Changes
+- Rename all end-user-visible "Claude" references to "Chainlink AI": "What Claude Noticed" button/dialog → "What Chainlink AI Noticed" (`app_pages/home.py`); chat page header and subtitle → "Chainlink AI" and "Chainlink AI queries Snowflake directly" (`app_pages/ai_chat.py`); spinner → "Chainlink AI is thinking..." — function/variable names and API references unchanged
+- Rename "OFF" / "Open Food Facts" terminology in UPC Diagnostic Tool to "Barcode Database" throughout — column headers, button labels, checkbox label, and expander text
+- UPC Diagnostic Tool download buttons show dynamic product counts in labels so users know exactly what each file contains before downloading
+- Remove environment label (`[L] LOCAL`, `[D] DEV`) from sidebar footer — footer now shows version + copyright only
+- Update sidebar copyright from © 2025 to © 2026
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
+
+## [v1.6.3] — 2026-06-17
+
+### New Features
+- Add `load_chain_stores(conn, tenant_id, chain_name)` to `utils/load_company_data_helpers.py` — queries CUSTOMERS for active stores of a chain and returns `{STORE_NUMBER: STORE_NAME}` dict; STORE_NUMBER normalized to string for type-safe comparison; always scoped to TENANT_ID
+- Add `validate_and_enrich_chain_file(df, selected_chain, chain_store_lookup)` to `utils/load_company_data_helpers.py` — shared validation + enrichment used by both Distro Grid and Reset Schedule upload flows; checks: STORE_NUMBER column present, CHAIN_NAME matches dropdown or is auto-added, every STORE_NUMBER exists in CUSTOMERS for the selected chain, STORE_NAME auto-populated from CUSTOMERS lookup if column is absent
+- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Distro Grid uploader (`app_pages/distro_grid_sections.py`) — runs after existing CHAIN_NAME validation, before `upload_distro_grid_to_snowflake()`; blocks upload and surfaces per-issue error messages on failure
+- Wire `load_chain_stores()` + `validate_and_enrich_chain_file()` into Reset Schedule uploader (`app_pages/reset_schedule_sections.py`) — runs after existing chain mismatch check, before `upload_reset_data()`; identical error behavior
+- Add `check_duplicate_store_numbers()` to `utils/load_company_data_helpers.py` — detects CHAIN_NAME + STORE_NUMBER combinations that resolve to different physical locations (different ADDRESS or CITY) in the upload file before any Snowflake write is attempted
+- Add `fetch_duplicate_stores()` to `utils/ai_insights.py` — queries the live CUSTOMERS table per tenant for existing duplicate store number records (ACCOUNT_STATUS = 'ACTIVE' only); results are injected into the "What Claude Noticed" AI prompt as data integrity warnings
+- "What Claude Noticed" panel now surfaces existing duplicate store number records as ⚠️ warnings with standard language: "[CHAIN] has [N] locations with store number [STORE_NUMBER] — resolve in source application before the next data upload"
+- Add `.python-version` file pinned to `3.11` — belt-and-suspenders Python version pin for Streamlit Cloud
+
+### Bug Fixes
+- Fix UPC leading zeros stripped by Excel before upload — `format_uploaded_grid()` in `utils/distro_grid/formatters.py` now applies `zfill(11)` after converting float-encoded UPCs to int, preserving leading zeros before the value reaches the VARCHAR(20) Snowflake column
+- Fix empty SKU values causing type errors on upload — `format_uploaded_grid()` now fills null/empty SKU with `0` and casts to int before the value reaches the NUMBER(20,0) Snowflake column
+- Fix gap report and gap email crashing on Streamlit Cloud with `NotSupportedError` — replaced `fetch_pandas_all()` with `fetchall()` + `pd.DataFrame(rows, columns=cols)` in `utils/gap_report_builder.py` and `utils/email_gap_utils.py`; `fetch_pandas_all()` requires the Arrow C extension (`nanoarrow`) which is not available on Python 3.14 on Streamlit Cloud
+- Fix Email Gap Report page crashing on Streamlit Cloud — restored `width='stretch'` on 6 widgets in `app_pages/email_gap_report.py` (`st.dataframe`, 2× `download_button`, 3× `button`) that were incorrectly reverted to `use_container_width=True`; Streamlit 1.56.0 removed `use_container_width` support after 2025-12-31
+- Fix `validate_contacts_before_send()` crashing entire gap email send on SQL error — call is now wrapped in `try/except Exception: missing_contacts = []` in `send_gap_history_pdfs()` so a SQL failure (missing column, permissions) degrades gracefully instead of aborting all emails
+
+### UI Changes
+- Customers upload page now blocks upload with a `⛔ Upload Blocked — Duplicate Store Numbers Detected` banner and per-store expandable panels showing each conflicting address, city, and rep when duplicates are found in the upload file; upload button is suppressed until the source data is corrected
+- Distro Grid and Reset Schedule upload pages now hard-stop with `⛔ Upload Blocked` banner listing specific store numbers not found in CUSTOMERS, preventing silent data quality issues downstream
+- Both Distro Grid and Reset Schedule pages auto-populate CHAIN_NAME from the dropdown if the column is absent in the uploaded file, and auto-populate STORE_NAME from CUSTOMERS if the column is absent — no manual column addition required
+- Disable Predictive Purchases and Predictive Truck Plan tabs with "Coming Soon" treatment via `COMING_SOON_TABS` constant — hidden until underlying data pipeline is ready; prevents client confusion over incomplete features; re-enable is a one-line change
+
+### Snowflake / DB Changes
+- New read-only query against CUSTOMERS on each Distro Grid and Reset Schedule upload: `SELECT STORE_NUMBER, STORE_NAME WHERE TENANT_ID = ? AND CHAIN_NAME = ? AND ACCOUNT_STATUS = 'ACTIVE'`; no schema changes required
+- New read-only `HAVING COUNT(*) > 1` query against CUSTOMERS at session load time — grouped by CHAIN_NAME + STORE_NUMBER, scoped to TENANT_ID and ACCOUNT_STATUS = 'ACTIVE'; no schema changes required
+
+### Breaking Changes
+- None
+
+---
+
+## [v1.6.0] — 2026-05-19
+
+### New Features
+- Add `SALESPERSON_CHANGE_LOG` table — permanent audit log of store-level ownership transfers; written automatically on every Customers upload where salesperson assignments change
+- Add `detect_ownership_changes()` to `customers_helpers.py` — before/after comparison at upload time to detect which stores changed hands; uses CHAIN_NAME + STORE_NUMBER as join key against current CUSTOMERS data
+- Add `log_ownership_changes()` to `customers_helpers.py` — writes detected changes to `SALESPERSON_CHANGE_LOG` atomically with the CUSTOMERS insert (same transaction)
+- Add `check_sales_contacts_coverage()` to `customers_helpers.py` — validates new reps have active SALES_CONTACTS entries at upload time; shows red blocking error in UI if any are missing
+- Add `validate_contacts_before_send()` to `gap_history_mailer.py` — blocks gap report email send if any rep in the current report has no active SALES_CONTACTS entry; returns actionable error message listing missing reps
+- Add ownership change notice and missing-contacts blocking error to Customers upload UI in `load_company_sections.py`
+- Add Sales Contacts admin page (`app_pages/sales_contacts_admin.py`) — tenant admin UI for managing the `SALES_CONTACTS` table: add/edit/deactivate reps, set salesperson and manager email addresses, handle salesperson reassignment; used by Email Gap Report to route emails to the correct rep and manager
+
+### Bug Fixes
+- Fix gap report emails routing to departed or wrong salespeople after route reorganization — email routing now uses live `CUSTOMERS.SALESPERSON` (via `CURRENT_SALESPERSON` column added to `fetch_current_streaks()`) instead of frozen `GAP_REPORT_SNAPSHOT.SALESPERSON_NAME`
+- Fix gap report emails silently skipping reps missing from SALES_CONTACTS — pre-send validation in `send_gap_history_pdfs()` now blocks send and surfaces actionable error before any emails are sent
+
+### UI Changes
+- Customers upload page now shows info notice when stores are reassigned and a blocking red error when new reps are missing from Sales Contacts
+- Gap History Emailer now shows a blocking red error (no emails sent) when any rep in the report is missing from Sales Contacts
+- Email gap report HTML redesigned — new card layout with header gradient, metrics row (Total Gaps / New This Week / 2–3 Weeks / 4+ Weeks with color-coded severity), two-column chains + suppliers panel, modernized execution table, and attachment note; email now uses live `CURRENT_SALESPERSON` routing so it reaches the rep currently assigned to each store
+
+### Snowflake / DB Changes
+- New table: `SALESPERSON_CHANGE_LOG` — stores TENANT_ID (VARCHAR), CHAIN_NAME, STORE_NUMBER, OLD_SALESPERSON, NEW_SALESPERSON, CHANGED_AT, UPLOAD_BATCH_ID; indexed on (TENANT_ID, CHAIN_NAME, STORE_NUMBER, CHANGED_AT) and (TENANT_ID, NEW_SALESPERSON, CHANGED_AT)
+- Update `GAP_CURRENT_STREAKS` view — add join to `SALESPERSON_CHANGE_LOG` and WHERE condition to exclude pre-transfer snapshot history from new rep's streak calculation (apply in Snowflake directly; see spec Part 4)
+- Remove `GAP_REPORT_SNAPSHOT` from reassignment tool table map — historical snapshot rows preserved as-is; route reorganizations handled by upload detection
+
+### Breaking Changes
+- None
+
 ### Backlog / Known Issues
 - Add formatter validation for YES_NO column — block upload if column is empty, block if no rows have YES_NO = 1, block if any values are not 0 or 1. Silent conversion of empty to 0 during sanitization was masking bad uploads (discovered during v1.2.0 CVS rebuild)
 - Add formatter validation for SKU column — warn and default to 0 if SKU column is empty or contains non-numeric values. Currently sanitization silently fills with 0 without warning
 - Add formatter validation to catch SKU values with incorrect digit count — e.g. removing a digit from a valid SKU should be flagged
 
 ### Release Process Tasks
-- **Keep `version.txt` in sync with `CHANGELOG.md`** — whenever `[Unreleased]` is promoted to a new version block (e.g. `[vX.X.X] — YYYY-MM-DD`), also update `E:\Development\chainlink_core\version.txt` so its single-line version string matches the new release version exactly (e.g. `v1.4.0`). Both files must be committed together as part of the release commit (`chore: release vX.X.X`)
+- **Keep `version.txt` in sync with `CHANGELOG.md`** — whenever `[Unreleased]` is promoted to a new version block, also update `E:\Development\chainlink_core\version.txt` so its single-line version string matches exactly. Both files must be committed together as part of the release commit (`chore: release vX.X.X`)
+
+---
+
+## [v1.5.0] — 2026-05-16
+
+### New Features
+- Add AI-drafted personalized coaching note to gap report emails — `generate_salesperson_coaching()` in `ai_insights.py` uses Claude Haiku to write 2-3 sentences of personalized coaching per salesperson based on their actual gap counts, oldest gaps, and top chains; rendered as a blue coaching card above the PDF attachment note in each email
+- Add `DIAGNOSTIC` intent class to AI Data Query — when user asks "why is X not showing," AI skips SQL generation and hands off to `run_diagnostic()` automatically; returns plain-English root cause with fix instructions instead of raw data
+- Add `build_narrative()` to `utils/diagnostics.py` — interprets diagnostic count results and returns ✅ / ❌ narrative (root cause + fix) instead of raw dataframe
+- Add `GAP_REPORT_TMP` and `GAP_REPORT_TMP2` to AI Data Query schema context and `ALLOWED_TABLES` — AI now queries pre-built gap tables directly instead of rebuilding gap logic from raw tables
+- Add `check_gap_tables_populated()` diagnostic check — fires before supplier checks; reports "run PROCESS_GAP_REPORT SP" message if gap tables are empty
+- Add five gap query patterns to AI system prompt covering gaps by supplier, salesperson, county, and reset context
+
+### Bug Fixes
+- Fix Customers, Products, and Sales Report uploads failing with `NP.INT64` SQL error after pandas 2.x upgrade — explicit `int()` and `str()` casts added to all `executemany` record builders in `write_customers_to_snowflake()`, `write_products_to_snowflake()`, and `write_salesreport_to_snowflake()`
+- Fix AI gap queries bypassing `SUPPLIER_COUNTY` authorization check — now uses `GAP_REPORT_TMP` exclusively for gap analysis
+- Fix diagnostic firing on `LOOKUP` intent zero-row results — clean "no records found" message shown instead
+- Fix `run_diagnostic()` to accept `generated_sql=None` for `DIAGNOSTIC` intent calls
+- Fix cross-tenant `TENANT_ID` validator incorrectly rejecting gap table queries — `GAP_REPORT_TMP` and `GAP_REPORT_TMP2` have no `TENANT_ID` column; validator now skips check when all referenced tables are gap tables
+
+### UI Changes
+- Replace raw diagnostic dataframe display with plain-English narrative
+- Add red coaching card to gap report email layout — renders above gap metrics, silently skipped if API call fails so email always sends
+- Add `dq_diagnosis_counts` to session state and clear button reset block
+
+### Snowflake / DB Changes
+- Add `GAP_REPORT_TMP` and `GAP_REPORT_TMP2` table definitions to Snowflake schema skill with column definitions, mixed-case quoting warnings (`"dg_upc"`, `"sr_upc"`, `"In_Schematic"`), and no-`TENANT_ID` rule
+- Add gap business rules to AI system prompt — three-layer eligibility: county authorization + chain carry + store-level placement
+
+### Breaking Changes
+- None
+
+### Dependencies
+- `ai_insights.py` new module — requires `anthropic` package (already in requirements)
+
+---
+
+## [v1.4.0] — 2026-05-14
+
+### New Features
+- Add AI Chat — dedicated Chat section in sidebar; Claude answers questions about data, writes and executes SQL queries, interprets results in plain English; supports full conversation history per session with clear button to reset
+- Add "What Claude Noticed" modal — Home Dashboard proactively analyzes execution data on session load; surfaces up to 6 prioritized insights (warnings, observations, positives); detects week-over-week execution drops, multi-period worsening trends, high-gap chains, and standout performers
+- Add `describe_table` tool to AI Chat — AI inspects exact column names and data types before writing queries, eliminating column-guessing errors
+
+### Bug Fixes
+- Fix `altair_chart()` TypeError across 11 files (`width='stretch'` → `use_container_width=True`)
+- Fix SQL injection vulnerability in supplier scatter chart
+- Fix login page jumping — upgraded Streamlit `1.43.0` → `1.56.0`
+- Fix cross-tenant cache leak — all cached functions now use `tenant_id` as explicit cache discriminator
+
+### UI Changes
+- Color palette rebrand — updated to modern color scheme throughout the app
+- Remove all "Snowflake" references from end-user-facing UI — replaced with "your Chainlink database"
+
+### Snowflake / DB Changes
+- Cache all Home dashboard Snowflake queries with 5-minute TTL and per-tenant isolation
+- Cache chain names for AI Chat in session state instead of re-querying on every render
+
+### Breaking Changes
+- None
+
+### Dependencies
+- `streamlit` bumped to `1.56.0`
+- `anthropic >= 0.20.0`
 
 ---
 
@@ -65,14 +221,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - AI Data Query: CTE support — AI prompt now instructs Claude to use `WITH` CTEs for any multi-step or multi-table logic; validator updated to recognize CTE aliases as valid table references
 
 ### Bug Fixes
-- Fix AI Data Query validator falsely blocking CTE queries — `_validate_sql()` was treating CTE alias names (e.g. `cte_base`) as unknown tables; now extracts CTE names via regex before the allowed-table check and skips them
-- Fix `_inject_safety_cap` missing after intermediate refactor — function was accidentally removed during the row-count rewrite; restored in follow-up commit
+- Fix AI Data Query validator falsely blocking CTE queries — `_validate_sql()` was treating CTE alias names as unknown tables; now extracts CTE names via regex before the allowed-table check and skips them
+- Fix `_inject_safety_cap` missing after intermediate refactor — restored in follow-up commit
 - Fix AI generating queries with `C.STATE` against CUSTOMERS — CUSTOMERS has no STATE column; schema prompt now explicitly notes STATE exists only in RESET_SCHEDULE
-- Fix Clear button leaving `dq_input` stale in session state — Clear now also pops `dq_input` so the text field resets cleanly on rerun
+- Fix Clear button leaving `dq_input` stale in session state — Clear now also pops `dq_input`
 
 ### UI Changes
 - Run/Clear buttons are now equal-width, side-by-side, and full-container-width with clearer labels (▶ Run Query / ✕ Clear)
-- Results banner now shows exact row count with a "capped" note when the safety cap truncated results; shows full count when all rows are returned
+- Results banner now shows exact row count with a "capped" note when the safety cap truncated results
 - Example questions expander auto-collapses once a question is active
 - Page subtitle updated to "Queries are read-only and tenant-scoped" (was "limited to 500 rows")
 
@@ -87,34 +243,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.2.0] — 2026-04-20
 
 ### New Features
-- Placement Intelligence now compares against a filtered matched archive (DISTRO_GRID_MATCHED_ARCHIVE) instead of the raw full archive — results now reflect only true Delta Pacific placements in authorized territories, eliminating inflated/inaccurate placement counts from other distributors and out-of-territory stores
-- New `archive_distro_grid()` function in `utils/distro_grid_helpers.py` — handles writing both archive tables after UPDATE_DISTRO_GRID runs, ensuring PRODUCT_ID and COUNTY are stamped before the matched archive three-way filter is applied
+- Placement Intelligence now compares against a filtered matched archive (DISTRO_GRID_MATCHED_ARCHIVE) instead of the raw full archive — results now reflect only true Delta Pacific placements in authorized territories
+- New `archive_distro_grid()` function in `utils/distro_grid_helpers.py` — handles writing both archive tables after UPDATE_DISTRO_GRID runs
 
 ### Bug Fixes
-- Fix Placement Intelligence showing inflated placement counts (e.g. 493 new placements at Safeway) — root cause was comparing raw unfiltered DISTRO_GRID rows against raw unfiltered archive rows; both sides now apply the three-way Delta Pacific filter for apples-to-apples comparison
-- Fix matched archive always writing 0 rows — archiving was happening before UPDATE_DISTRO_GRID ran, so all rows had PRODUCT_ID = 0 and COUNTY = NULL at archive time; archiving now happens after the procedure stamps those fields
-- Fix ambiguous TENANT_ID SQL compilation error in matched archive INSERT — resolved by wrapping DISTRO_GRID rows in a subquery before joining to SUPPLIER_COUNTY, eliminating column name ambiguity between the two tables
-- Fix LOG table INSERT failing with invalid identifier errors — updated `insert_log_entry()` to match actual LOG table schema (EVENT_TS, LEVEL, TENANT_ID, MESSAGE, CONTEXT) replacing old mismatched column references; CONTEXT stored as VARIANT using PARSE_JSON()
-- Fix PARSE_JSON() failing in VALUES clause — Snowflake does not support PARSE_JSON() in VALUES; changed to INSERT INTO ... SELECT ... FROM (SELECT 1) pattern
+- Fix Placement Intelligence showing inflated placement counts (e.g. 493 new placements at Safeway) — both sides now apply the three-way Delta Pacific filter for apples-to-apples comparison
+- Fix matched archive always writing 0 rows — archiving now happens after the procedure stamps PRODUCT_ID and COUNTY fields
+- Fix ambiguous TENANT_ID SQL compilation error in matched archive INSERT
+- Fix LOG table INSERT failing with invalid identifier errors — updated `insert_log_entry()` to match actual LOG table schema
+- Fix PARSE_JSON() failing in VALUES clause — changed to INSERT INTO ... SELECT ... FROM (SELECT 1) pattern
 
 ### UI Changes
 - Upload progress steps reordered to reflect new archive-after-procedure flow: 1) Delete + Insert, 2) UPDATE_DISTRO_GRID, 3) Archive
-- Improved error messaging in upload flow — three distinct error states now reported separately: upload failure, procedure failure, and archive failure, so users know exactly which step failed
+- Improved error messaging — three distinct error states reported separately: upload failure, procedure failure, archive failure
 
 ### Snowflake / DB Changes
-- **DISTRO_GRID_ARCHIVE renamed to DISTRO_GRID_ARCHIVE_FULL** — existing archive table renamed; purpose unchanged (full recovery backup of all chain grid rows); retention 1 year rolling
-- **New table: DISTRO_GRID_MATCHED_ARCHIVE** — filtered archive containing only Delta Pacific placements passing the three-way filter (PRODUCT_ID <> 0, valid COUNTY, authorized SUPPLIER_COUNTY join); used exclusively by Placement Intelligence; retention 2 years rolling
-- **DG_ARCHIVE_TRACKING updated** — added FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT timestamp columns replacing original ARCHIVED_AT; both stamped together in the same transaction at upload time
-- Historical data migrated from DISTRO_GRID_ARCHIVE_FULL to DISTRO_GRID_MATCHED_ARCHIVE with three-way filter applied — DISTRO_GRID_ARCHIVE_FULL rows stamped with PRODUCT_ID and COUNTY via UPDATE logic mirroring UPDATE_DISTRO_GRID SP before migration
-- DISTRO_GRID_MATCHED_ARCHIVE pruned to 2-year retention window (no rows removed as all data is within window)
-- SUPPLIER_COUNTY table backed up as SUPPLIER_COUNTY_BACKUP_20260418 before migration
-- Spring 2026 archives rebuilt for 6 priority chains after code deployment: Safeway (3,172), Raleys (4,700), Sprouts (397), Whole Foods (315), CVS (58), FoodMaxx (0 — pending SUPPLIER_COUNTY records for OUTLAW LIGHT BEER)
-- schema.py updated — DISTRO_GRID_ARCHIVE_DB_COLUMNS renamed to DISTRO_GRID_ARCHIVE_FULL_DB_COLUMNS; new DISTRO_GRID_MATCHED_ARCHIVE_DB_COLUMNS added; DG_ARCHIVE_TRACKING_DB_COLUMNS updated with new timestamp columns
+- **DISTRO_GRID_ARCHIVE renamed to DISTRO_GRID_ARCHIVE_FULL** — retention 1 year rolling
+- **New table: DISTRO_GRID_MATCHED_ARCHIVE** — filtered archive for Placement Intelligence; retention 2 years rolling
+- **DG_ARCHIVE_TRACKING updated** — added FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT replacing original ARCHIVED_AT
+- Historical data migrated with three-way filter applied
+- Spring 2026 archives rebuilt for 6 priority chains: Safeway (3,172), Raleys (4,700), Sprouts (397), Whole Foods (315), CVS (58), FoodMaxx (0)
+- schema.py updated with new column name constants
 
 ### Breaking Changes
-- **DISTRO_GRID_ARCHIVE no longer exists** — renamed to DISTRO_GRID_ARCHIVE_FULL; any queries or processes referencing DISTRO_GRID_ARCHIVE must be updated to use DISTRO_GRID_ARCHIVE_FULL
-- **Placement Intelligence season dropdown** must now point to DISTRO_GRID_MATCHED_ARCHIVE instead of DISTRO_GRID_ARCHIVE — callers of `fetch_distinct_values()` for the season selector must pass the new table name
-- **DG_ARCHIVE_TRACKING.ARCHIVED_AT** no longer written — replaced by FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT; any queries reading ARCHIVED_AT must be updated to use FULL_ARCHIVED_AT
+- **DISTRO_GRID_ARCHIVE no longer exists** — renamed to DISTRO_GRID_ARCHIVE_FULL
+- **Placement Intelligence season dropdown** must point to DISTRO_GRID_MATCHED_ARCHIVE
+- **DG_ARCHIVE_TRACKING.ARCHIVED_AT** replaced by FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT
 
 ---
 
@@ -124,26 +278,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - None
 
 ### Bug Fixes
-- Fix Supplier by County pivot upload failing on Streamlit Cloud with `'str' object cannot be interpreted as an integer` — root cause was `TOTAL` summary column being included in the melt as a county name; now excluded via `SUMMARY_COLS` filter
-- Fix Supplier by County pivot upload failing on Streamlit Cloud due to file buffer exhaustion — `format_supplier_by_county()` now accepts either a file object or a pre-read DataFrame; `load_company_sections.py` passes the already-read `raw_df` to avoid double-read on cloud
-- Fix Supplier by County upload blocked by `width='stretch'` not supported in Streamlit 1.43.0 — replaced with `use_container_width=True` (reverted to compatible syntax for production)
-- Fix Customers upload failing validation with `Missing required columns` — `format_customers_upload()` now includes explicit alias map for source export column names (`Chain` → `CHAIN_NAME`, `Customer Name` → `STORE_NAME`, `Salesman` → `SALESPERSON`, `Shipping Address` → `ADDRESS`, `Chain Store Number` → `STORE_NUMBER`)
-- Fix Distro Grid upload leaving orphaned rows on failure — `load_data_into_distro_grid()` now wraps archive, delete, and insert steps in a single transaction; any failure rolls back all steps atomically and surfaces a clear error message
-- Fix false `✅ Upload complete` message showing after a failed Distro Grid upload — added `upload_succeeded` flag so post-upload steps and success messages only fire if insert committed successfully
-- Fix `UPDATE_DISTRO_GRID` SP using `GETVARIABLE('selected_chain')` session variable that was never actually set — SP now accepts `CHAIN_NAME_FILTER VARCHAR DEFAULT NULL` parameter; Python passes chain directly via `%s` bind parameter
-- Fix `call_procedure_update_DG()` using fragile `SET selected_chain` session variable approach — now passes chain as a direct parameter; eliminates race condition risk when multiple users upload simultaneously
+- Fix file uploader silently failing on Streamlit Community Cloud in Reset Schedule sections — wrapped in `st.form`
+- Fix circular import caused by `reset_schedule_sections.py` overwriting `utils/reset_schedule_helpers.py`
 
 ### UI Changes
-- Replace all deprecated `use_container_width=True/False` with `width='stretch'`/`width='content'` across all pages after upgrading to Streamlit 1.56.0 on dev branch
+- Reset Schedule uploader validates selected chain matches `CHAIN_NAME` in uploaded file
 
 ### Snowflake / DB Changes
-- `UPDATE_DISTRO_GRID` SP refactored: now accepts optional `CHAIN_NAME_FILTER VARCHAR DEFAULT NULL` parameter — when provided, all UPDATE statements are scoped to that chain only; when NULL (default), all chains are updated (full refresh). Enables targeted post-upload updates without touching other chains
-- `UPDATE_DISTRO_GRID` SP: added Step 3 to update `YES_NO` column — set to `1` if UPC exists in `PRODUCTS` (any length variant match), `0` if not. Note: this step was subsequently removed after review; `YES_NO` is now preserved as uploaded
-- Removed `YES_NO` auto-update from `UPDATE_DISTRO_GRID` SP — `YES_NO` value from the uploaded grid is preserved; SP only updates `COUNTY`, `MANUFACTURER`, and `PRODUCT_NAME`
+- None
 
 ### Breaking Changes
-- `UPDATE_DISTRO_GRID` SP signature changed from no parameters to `(CHAIN_NAME_FILTER VARCHAR DEFAULT NULL)` — old no-arg call `CALL UPDATE_DISTRO_GRID()` still works (NULL default = all chains), but the old SP must be dropped before deploying the new one (`DROP PROCEDURE UPDATE_DISTRO_GRID()`)
-- Streamlit upgraded from 1.43.0 to 1.56.0 on `dev` branch — `use_container_width` fully replaced with `width` parameter across all pages
+- None
 
 ---
 
@@ -169,27 +314,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.1.0] — 2026-03-25
 
 ### New Features
-- AI Data Query — admins can ask plain English questions about their data and get instant results. Claude generates a safe SELECT query, validates it, runs it against Snowflake, and shows results in a table with CSV download. Chain names loaded dynamically so AI always knows exact values. Includes example questions, retry logic on API overload, and friendly error messages
-- Placement Intelligence fully wired end-to-end: compares current DISTRO_GRID vs archived season, shows new/removed placements by manufacturer, generates GPT-4 AI narrative summary, and supports follow-up Q&A with full manufacturer context
-- New inline Reset Schedule editor for admins — edit RESET_DATE and RESET_TIME directly in table, only changed rows written back to Snowflake via targeted UPDATE statements
+- AI Data Query — admins ask plain English questions; Claude generates safe SELECT query, validates, runs against Snowflake, shows results with CSV download; chain names loaded dynamically; includes example questions and retry logic
+- Placement Intelligence fully wired end-to-end — compares current DISTRO_GRID vs archived season, shows new/removed placements by manufacturer, generates AI narrative summary, supports follow-up Q&A
+- New inline Reset Schedule editor — edit RESET_DATE and RESET_TIME directly in table; only changed rows written back via targeted UPDATE statements
 
 ### Bug Fixes
-- Fix Placement Intelligence AI summary reading wrong session state keys causing blank output
-- Fix archive query timestamp vs date mismatch (ARCHIVED_AT vs ARCHIVE_DATE) causing zero archive rows returned
-- Fix PRODUCT_ID != 0 filter wiping all current DISTRO_GRID rows where PRODUCT_ID is NULL
-- Fix UPC matching — now uses same 11-digit normalization as PROCESS_GAP_REPORT (12-digit UPCs truncated to 11, matched via SQL EXISTS against PRODUCTS.CARRIER_UPC)
-- Fix pd.read_sql silent empty DataFrame on shared session connection — Placement Intelligence now opens a fresh tenant connection
-- Fix DEBUG st.write lines left in _format_pivot() showing on screen for all pivot uploads
-- Fix RESET_TIME stripping to NULL on upload — pd.to_datetime() cannot handle time objects or AM/PM strings; replaced with robust _normalize_time() helper that handles time objects, datetime objects, AM/PM strings, 24hr strings, and Excel decimal fractions
+- Fix Placement Intelligence AI summary reading wrong session state keys
+- Fix archive query timestamp vs date mismatch causing zero archive rows
+- Fix PRODUCT_ID != 0 filter wiping all DISTRO_GRID rows where PRODUCT_ID is NULL
+- Fix UPC matching — now uses same 11-digit normalization as PROCESS_GAP_REPORT
+- Fix pd.read_sql silent empty DataFrame on shared session connection
+- Fix DEBUG st.write lines showing on screen for all pivot uploads
+- Fix RESET_TIME stripping to NULL on upload — replaced with robust `_normalize_time()` helper
 
 ### UI Changes
-- Placement Intelligence rebuilt with persistent session state so Run Comparison and Generate AI Summary work independently without wiping each other on rerun
-- Results shown in tabbed layout (New / Removed Placements) with manufacturer summary + full detail expander
-- Follow-up Q&A wired with full conversation history including full manufacturer breakdown data so AI can answer specific questions accurately
-- Reset Schedule page restructured with expanders (Step 1: Download & Format, Step 2: Upload, Edit — admin only)
+- Placement Intelligence rebuilt with persistent session state
+- Results shown in tabbed layout (New / Removed Placements)
+- Reset Schedule page restructured with expanders
 
 ### Snowflake / DB Changes
-- Distro Grid formatter now normalizes all UPCs to full 12-digit GS1 UPC-A at upload time using check digit calculation: 11-digit → append check digit, 10-digit (Excel leading zero stripped) → pad to 11 → append check digit. Ensures clean matching against PRODUCTS.CARRIER_UPC going forward
+- Distro Grid formatter normalizes all UPCs to full 12-digit GS1 UPC-A at upload time using check digit calculation
 
 ### Breaking Changes
 - None
@@ -202,11 +346,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - None
 
 ### Bug Fixes
-- Fix file uploader silently failing on Streamlit Community Cloud in Reset Schedule formatter and uploader sections — wrapped both in `st.form` to prevent rerun state wipe (matches distro grid pattern)
-- Fix circular import caused by `reset_schedule_sections.py` content accidentally overwriting `utils/reset_schedule_helpers.py`
+- Fix file uploader silently failing on Streamlit Community Cloud in Reset Schedule sections — wrapped in `st.form`
+- Fix circular import caused by `reset_schedule_sections.py` overwriting `utils/reset_schedule_helpers.py`
 
 ### UI Changes
-- Reset Schedule uploader now validates that the selected chain dropdown matches `CHAIN_NAME` in the uploaded file — blocks upload with a clear error if mismatched
+- Reset Schedule uploader validates selected chain matches `CHAIN_NAME` in uploaded file
 
 ### Snowflake / DB Changes
 - None
@@ -217,19 +361,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ---
 
 ## [v1.0.3] — 2025-??-??
-> _Fill in the release date and details from memory or git log._
+> _Fill in release date and details from git log._
 
 ### New Features
-- 
+-
 
 ### Bug Fixes
-- 
+-
 
 ### UI Changes
-- 
+-
 
 ### Snowflake / DB Changes
-- 
+-
 
 ### Breaking Changes
 - None
@@ -239,16 +383,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.0.2] — 2025-??-??
 
 ### New Features
-- 
+-
 
 ### Bug Fixes
-- 
+-
 
 ### UI Changes
-- 
+-
 
 ### Snowflake / DB Changes
-- 
+-
 
 ### Breaking Changes
 - None
@@ -258,16 +402,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [v1.0.1] — 2025-??-??
 
 ### New Features
-- 
+-
 
 ### Bug Fixes
-- 
+-
 
 ### UI Changes
-- 
+-
 
 ### Snowflake / DB Changes
-- 
+-
 
 ### Breaking Changes
 - None
@@ -301,18 +445,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [vX.X.X] — YYYY-MM-DD
 
 ### New Features
-- 
+-
 
 ### Bug Fixes
-- 
+-
 
 ### UI Changes
-- 
+-
 
 ### Snowflake / DB Changes
-- 
+-
 
 ### Breaking Changes
-- 
+-
 
 -->

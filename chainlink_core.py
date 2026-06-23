@@ -22,7 +22,6 @@ import streamlit_authenticator as stauth
 import extra_streamlit_components as stx
 from streamlit.components.v1 import html
 
-from utils.logout_utils import handle_logout
 from utils.ui_helpers import add_logo
 from tenants.tenant_manager import load_tenant_config
 from sf_connector.service_connector import connect_to_tenant_snowflake, get_service_account_connection
@@ -41,11 +40,8 @@ from app_pages.predictive_purchases import render as predictive_purchases_page
 from app_pages import driver_forecast
 
 from nav.navigation_bar import (
-    render_navigation,
-    render_format_upload_submenu,
-    render_reports_submenu,
-    render_ai_forecasts_submenu,
-    render_admin_submenu,
+    render_sidebar_navigation,
+    render_login_branding,
 )
 from nav.task_indicator import render_task_indicator, render_task_sidebar_card
 
@@ -59,6 +55,9 @@ APP_ENV = os.getenv("APP_ENV", "local")
 
 with open("version.txt", "r") as f:
     APP_VERSION = f.read().strip()
+
+# Remove a tab name from this set to re-enable it when the feature is ready.
+COMING_SOON_TABS: set[str] = {"Predictive Purchases", "Predictive Truck Plan"}
 
 def _safe_import(module_path: str):
     """Lazy-import a page module by dotted path."""
@@ -121,13 +120,23 @@ def _inject_global_styles():
     :root {
         --primary-color: #6497D6;
         --secondary-color: #B3D7ED;
-        --background-color: #F8F2EB;
+        --background-color: #F1F5F9;
     }
     h1, h2, h3 { color: var(--primary-color) !important; }
     div[data-testid="stDataFrameContainer"] table {
         border-radius: 8px;
         overflow: hidden;
     }
+    .table thead th {
+        background-color: #6497D6 !important;
+        color: white !important;
+        font-weight: 600;
+        border-bottom: 2px solid #4c7dc0 !important;
+    }
+    .table-striped tbody tr:nth-of-type(odd) {
+        background-color: rgba(100, 151, 214, 0.06) !important;
+    }
+    .table td, .table th { border-color: #E2E8F0 !important; }
     .stDownloadButton button {
         background-color: var(--primary-color);
         color: white !important;
@@ -316,6 +325,7 @@ def main():
             st.rerun()
 
         hide_sidebar()
+        render_login_branding()
         authenticator.login(location="main")
 
         # Re-read after form render
@@ -331,11 +341,13 @@ def main():
             pass
         else:
             # Waiting for input — stop here, render nothing else
-            st.warning("Please enter your username and password")
-            with st.expander("Forgot your password?"):
-                if st.button("Reset Password Link"):
-                    st.session_state["forgot_password_submitted"] = True
-                    st.rerun()
+            _, mid, _ = st.columns([1, 2, 1])
+            with mid:
+                st.warning("Please enter your username and password")
+                with st.expander("Forgot your password?"):
+                    if st.button("Send Reset Link", use_container_width=True):
+                        st.session_state["forgot_password_submitted"] = True
+                        st.rerun()
             st.stop()
 
     # ── SUCCESSFUL LOGIN ──────────────────────────────────────────────────────
@@ -387,89 +399,131 @@ def main():
             st.session_state["tenant_id"]
         ) or name or username_lc
 
-        # Task indicator (above nav) — guarded inside the function
+        # Task indicator (above content area) — guarded inside the function
         render_task_indicator(
             conn=st.session_state["conn"],
             tenant_id=st.session_state["tenant_id"],
         )
 
-        # Sidebar + top nav
-        render_sidebar_header(display_name, tenant_config, authenticator)
-        is_admin      = bool(st.session_state.get("is_admin"))
-        selected_main = render_navigation(show_admin=is_admin, show_ai=is_admin)
+        # ── Sidebar navigation (logo + welcome + section nav + logout) ──────────
+        is_admin = bool(st.session_state.get("is_admin"))
+        selected_section = render_sidebar_navigation(
+            display_name=display_name,
+            tenant_config=tenant_config,
+            authenticator=authenticator,
+            show_admin=is_admin,
+            show_ai=is_admin,
+            app_version=APP_VERSION,
+            app_env=APP_ENV,
+            conn=st.session_state.get("conn"),
+            tenant_id=st.session_state.get("tenant_id", ""),
+        )
 
-        if not selected_main:
-            st.error("Navigation menu failed to render or returned no selection.")
-            return
-
-        # ── Routing ──────────────────────────────────────────────────────────
-        if selected_main == "Home":
+        # ── Routing — sub-pages rendered as tabs in the content area ──────────
+        if selected_section == "Home":
             _safe_import("app_pages.home").render()
-            return
 
-        if selected_main == "Reports":
-            report_page = render_reports_submenu()
-            route = {
-                "Gap Report":       "app_pages.gap_report",
-                "Email Gap Report": "app_pages.email_gap_report",
-                "Gap History":      "app_pages.gap_history",
-                "Data Exports":     "app_pages.data_exports",
-            }.get(report_page)
-            if not route:
-                st.warning("Invalid report selection.")
-                return
-            _safe_import(route).render()
-            return
+        elif selected_section == "Chat":
+            _safe_import("app_pages.ai_chat").render()
 
-        if selected_main == "Format and Upload":
-            selected_sub = render_format_upload_submenu()
-            route = {
-                "Load Company Data":            "app_pages.load_company_data",
-                "Reset Schedule Processing":    "app_pages.reset_schedule",
-                "Distribution Grid Processing": "app_pages.distro_grid",
-            }.get(selected_sub)
-            if not route:
-                st.warning("Invalid format/upload selection.")
-                return
-            _safe_import(route).render()
-            return
+        elif selected_section == "Reports":
+            t1, t2, t3 = st.tabs([
+                "📊  Gap Report",
+                "✉️  Email Gap Report",
+                "📁  Data Exports",
+            ])
+            with t1:
+                _safe_import("app_pages.gap_report").render()
+            with t2:
+                _safe_import("app_pages.email_gap_report").render()
+            with t3:
+                _safe_import("app_pages.data_exports").render()
 
-        if selected_main == "AI & Forecasts":
+        elif selected_section == "Format & Upload":
+            t1, t2, t3 = st.tabs([
+                "📂  Load Company Data",
+                "🔄  Reset Schedule",
+                "📊  Distribution Grid",
+            ])
+            with t1:
+                _safe_import("app_pages.load_company_data").render()
+            with t2:
+                _safe_import("app_pages.reset_schedule").render()
+            with t3:
+                _safe_import("app_pages.distro_grid").render()
+
+        elif selected_section == "AI & Forecasts":
             if not is_admin:
                 st.warning("You don't have access to AI & Forecasts.")
-                st.rerun()
-            selected_ai = render_ai_forecasts_submenu()
-            ai_pages = {
-                "Predictive Purchases":   "app_pages.predictive_purchases",
-                "Predictive Truck Plan":  "app_pages.predictive_truck_plan",
-                "AI-Narrative Report":    "app_pages.ai_narrative_report",
-                "Placement Intelligence": "app_pages.ai_placement_intelligence",
-                "Data Query":             "app_pages.data_query",
-            }
-            module_path = ai_pages.get(selected_ai)
-            if not module_path:
-                st.error(f"Unknown selection from AI & Forecasts menu: {selected_ai!r}")
-                st.info(f"Valid options: {', '.join(ai_pages.keys())}")
-            else:
-                _safe_import(module_path).render()
-            st.stop()
+                st.stop()
 
-        if selected_main == "Admin":
+            _AI_TABS = [
+                ("Predictive Purchases",   "🛒"),
+                ("Predictive Truck Plan",  "🚛"),
+                ("AI-Narrative Report",    "📝"),
+                ("Placement Intelligence", "🎯"),
+                ("Data Query",             "🔍"),
+            ]
+
+            def _ai_label(name: str, icon: str) -> str:
+                if name in COMING_SOON_TABS:
+                    return f"🔒  {name}  · Coming Soon"
+                return f"{icon}  {name}"
+
+            t1, t2, t3, t4, t5 = st.tabs([_ai_label(n, i) for n, i in _AI_TABS])
+
+            # Gray out and block clicks on coming-soon tabs via CSS nth-child targeting.
+            cs_positions = [
+                str(pos + 1)
+                for pos, (name, _) in enumerate(_AI_TABS)
+                if name in COMING_SOON_TABS
+            ]
+            if cs_positions:
+                sel = ", ".join(
+                    f'div[data-testid="stTabs"] [data-baseweb="tab"]:nth-child({p})'
+                    for p in cs_positions
+                )
+                st.markdown(
+                    f"<style>{sel} {{ pointer-events: none !important; "
+                    f"opacity: 0.4 !important; cursor: not-allowed !important; }}</style>",
+                    unsafe_allow_html=True,
+                )
+
+            with t1:
+                if "Predictive Purchases" in COMING_SOON_TABS:
+                    st.info("🔒 **Predictive Purchases** — Coming Soon")
+                else:
+                    _safe_import("app_pages.predictive_purchases").render()
+            with t2:
+                if "Predictive Truck Plan" in COMING_SOON_TABS:
+                    st.info("🔒 **Predictive Truck Plan** — Coming Soon")
+                else:
+                    _safe_import("app_pages.predictive_truck_plan").render()
+            with t3:
+                _safe_import("app_pages.ai_narrative_report").render()
+            with t4:
+                _safe_import("app_pages.ai_placement_intelligence").render()
+            with t5:
+                _safe_import("app_pages.data_query").render()
+
+        elif selected_section == "Admin":
             if not is_admin:
                 st.warning("You don't have access to Admin.")
-                st.rerun()
-            admin_page = render_admin_submenu()
-            route = {
-                "Admin Dashboard":      "app_pages.admin",
-                "Sales Contacts Admin": "app_pages.sales_contacts_admin",
-            }.get(admin_page)
-            if not route:
-                st.warning("Invalid admin selection.")
-                return
-            _safe_import(route).render()
-            return
+                st.stop()
+            t1, t2, t3 = st.tabs([
+                "⚙️  Admin Dashboard",
+                "👤  Sales Contacts Admin",
+                "🔬  UPC Diagnostic",
+            ])
+            with t1:
+                _safe_import("app_pages.admin").render()
+            with t2:
+                _safe_import("app_pages.sales_contacts_admin").render()
+            with t3:
+                _safe_import("app_pages.upc_validation_test").render()
 
-        st.warning("Unknown menu selection.")
+        else:
+            st.warning("Unknown menu selection.")
 
     # ── FAILED LOGIN ──────────────────────────────────────────────────────────
     elif auth_status is False:

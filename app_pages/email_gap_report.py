@@ -273,7 +273,7 @@ def render() -> None:
   margin-bottom: 6px;
 }
 .snapshot-card {
-  background: #F8F2EB;
+  background: #F1F5F9;
   border: 1px solid rgba(0,0,0,0.06);
   border-radius: 14px;
   padding: 14px 14px 10px 14px;
@@ -533,9 +533,11 @@ def render() -> None:
     st.subheader("Send Emails")
 
     sender_email = DEFAULT_SENDER_EMAIL
+    ai_api_key = ""
     try:
         if hasattr(st, "secrets"):
             sender_email = st.secrets.get("mail", {}).get("sender_email", DEFAULT_SENDER_EMAIL)
+            ai_api_key = st.secrets.get("anthropic", {}).get("api_key", "")
     except Exception:
         sender_email = DEFAULT_SENDER_EMAIL
 
@@ -553,30 +555,27 @@ def render() -> None:
             salespeople=None,
             min_streak=res["min_streak"],
             only_salespeople=[selected_sp],
+            ai_api_key=ai_api_key,
         )
 
-        st.success(
-            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
-            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
-            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
-            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
-            f"CCs: {result.get('manager_emailed', 0)})"
-        )
-
-        
-        if result.get("errors"):
-            st.error("Some emails were partially refused by SMTP")
-            st.json(result["errors"])
-
-        if result.get("sent_without_cc"):
-            st.warning(
-                "Sent without CC for: "
-                + ", ".join(result["sent_without_cc"])
+        if result.get("missing_contacts"):
+            st.error(f"**Email send blocked:** {result.get('error')}")
+        else:
+            st.success(
+                f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+                f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+                f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+                f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+                f"CCs: {result.get('manager_emailed', 0)})"
             )
-
-        
-
-
+            if result.get("errors"):
+                st.error("Some emails were partially refused by SMTP")
+                st.json(result["errors"])
+            if result.get("sent_without_cc"):
+                st.warning(
+                    "Sent without CC for: "
+                    + ", ".join(result["sent_without_cc"])
+                )
 
     if s2.button("Send ALL", type="secondary", width='stretch'):
 
@@ -590,28 +589,28 @@ def render() -> None:
             salespeople=None,
             min_streak=res["min_streak"],
             only_salespeople=sp_list,
+            ai_api_key=ai_api_key,
         )
 
-        st.success(
-            f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
-            f"Failed: {result.get('salesperson_fail', 0)}\n\n"
-            f"Recipients delivered: {result.get('total_emails_sent', 0)} "
-            f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
-            f"CCs: {result.get('manager_emailed', 0)})"
-        )
-
-       
-        if result.get("errors"):
-            st.error("Some emails were partially refused by SMTP")
-            st.json(result["errors"])
-
-        if result.get("sent_without_cc"):
-            st.warning(
-                "Sent without CC for: "
-                + ", ".join(result["sent_without_cc"])
+        if result.get("missing_contacts"):
+            st.error(f"**Email send blocked:** {result.get('error')}")
+        else:
+            st.success(
+                f"Sent (salespeople): {result.get('salesperson_success', 0)} | "
+                f"Failed: {result.get('salesperson_fail', 0)}\n\n"
+                f"Recipients delivered: {result.get('total_emails_sent', 0)} "
+                f"(Salespeople: {result.get('salesperson_emailed', 0)}, "
+                f"CCs: {result.get('manager_emailed', 0)})"
             )
+            if result.get("errors"):
+                st.error("Some emails were partially refused by SMTP")
+                st.json(result["errors"])
+            if result.get("sent_without_cc"):
+                st.warning(
+                    "Sent without CC for: "
+                    + ", ".join(result["sent_without_cc"])
+                )
 
-        
 
 
 

@@ -103,7 +103,11 @@ def fetch_sales_contacts(conn, tenant_id: int) -> pd.DataFrame:
         WHERE TENANT_ID = %s
           AND IS_ACTIVE = TRUE
     """
-    return conn.cursor().execute(sql, (tenant_id,)).fetch_pandas_all()
+    cur = conn.cursor()
+    cur.execute(sql, (tenant_id,))
+    rows = cur.fetchall()
+    cols = [desc[0] for desc in cur.description]
+    return pd.DataFrame(rows, columns=cols)
 
 
 def log_email_gap(

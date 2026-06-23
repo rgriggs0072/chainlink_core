@@ -31,11 +31,53 @@ from utils.snowflake_utils import check_and_process_data
 from utils.dashboard_data.home_dashboard import (
     get_execution_summary,
     fetch_chain_schematic_data,
-    fetch_supplier_schematic_summary_data,  # expects (conn, suppliers)
+    fetch_salesperson_execution,
+    fetch_gap_history,
+    fetch_supplier_schematic_summary_data,
 )
 
 # Tenant/org display name
 from utils.org_utils import get_business_name
+
+# AI proactive insights
+from utils.ai_insights import get_home_insights, fetch_duplicate_stores
+
+_SEVERITY_BG = {
+    "warning":  "#FFF7ED",
+    "info":     "#EFF6FF",
+    "positive": "#F0FDF4",
+}
+_SEVERITY_BORDER = {
+    "warning":  "#F97316",
+    "info":     "#6497D6",
+    "positive": "#22C55E",
+}
+_SEVERITY_ICON = {
+    "warning":  "⚠️",
+    "info":     "💡",
+    "positive": "✅",
+}
+
+
+@st.dialog("💡 What Chainlink AI Noticed", width="large")
+def _insights_dialog(insights: list[dict]) -> None:
+    if not insights:
+        st.info("Not enough data to surface meaningful insights right now.")
+        return
+    for item in insights:
+        sev = item.get("severity", "info")
+        st.markdown(
+            f"""<div style="
+                background:{_SEVERITY_BG.get(sev, '#EFF6FF')};
+                border-left:4px solid {_SEVERITY_BORDER.get(sev, '#6497D6')};
+                border-radius:8px;
+                padding:12px 16px;
+                margin-bottom:10px;
+                font-size:0.95rem;
+                line-height:1.5;
+            ">{_SEVERITY_ICON.get(sev, '💡')} {item['text']}</div>""",
+            unsafe_allow_html=True,
+        )
 
 
 def render() -> None:
@@ -60,14 +102,35 @@ def render() -> None:
     # Resolve display name: BUSINESS_NAME -> TENANT_NAME
     display_name = get_business_name(tenant_id) or fallback_name
 
+    # ---------------- Proactive AI analysis (runs once per session) ----------------
+    if "ai_home_insights" not in st.session_state:
+        try:
+            exec_sum = get_execution_summary(conn, tenant_id)
+            sp_df = fetch_salesperson_execution(conn, tenant_id)
+            gap_df_raw = fetch_gap_history(conn, tenant_id)
+            ch_df = fetch_chain_schematic_data(conn, tenant_config)
+            dup_stores = fetch_duplicate_stores(conn, tenant_id)
+            st.session_state["ai_home_insights"] = get_home_insights(
+                exec_sum, sp_df, gap_df_raw, ch_df, duplicate_stores=dup_stores
+            )
+        except Exception:
+            st.session_state["ai_home_insights"] = []
+
     # ---------------- Header ----------------
-    st.markdown(f"# {display_name}  Chain Dashboard")
-    st.markdown(
-        "<p style='margin-top: 0rem; font-size: 1rem; color: gray;'>"
-        "Welcome to your data intelligence hub."
-        "</p>",
-        unsafe_allow_html=True,
-    )
+    hdr_col, btn_col = st.columns([5, 1])
+    with hdr_col:
+        st.markdown(f"# {display_name}  Chain Dashboard")
+        st.markdown(
+            "<p style='margin-top: 0rem; font-size: 1rem; color: gray;'>"
+            "Welcome to your data intelligence hub."
+            "</p>",
+            unsafe_allow_html=True,
+        )
+    with btn_col:
+        st.markdown("<div style='padding-top:1.6rem'>", unsafe_allow_html=True)
+        if st.button("💡 What Chainlink AI Noticed", width='stretch', key="btn_ai_insights"):
+            _insights_dialog(st.session_state["ai_home_insights"])
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # ----------------------------------------------------------------------
     # Scoped CSS for *only* the Process Gap Pivot Data button
@@ -100,7 +163,7 @@ def render() -> None:
 
     try:
         # Execution summary numbers
-        total_in_schematic, total_purchased, total_gaps, purchased_pct = get_execution_summary(conn)
+        total_in_schematic, total_purchased, total_gaps, purchased_pct = get_execution_summary(conn, tenant_id)
         missed_revenue = total_gaps * 40.19  # TODO: parameterize $/gap if needed
 
         with row1_col1:
@@ -108,9 +171,10 @@ def render() -> None:
             st.markdown(
                 f"""
                 <div style="
-                    background-color:#F8F2EB;
+                    background-color:#F1F5F9;
                     padding:24px;
                     border-radius:12px;
+                    border:1px solid #E2E8F0;
                     box-shadow:0 2px 8px rgba(0,0,0,0.06);
                     text-align:left;">
                     <div style="font-weight:700; font-size:1.1rem; margin-bottom:8px;">Execution Summary</div>
@@ -128,7 +192,7 @@ def render() -> None:
             chain_summary_df = fetch_chain_schematic_data(conn, tenant_config)
             if not chain_summary_df.empty:
                 chart = (
-                    alt.Chart(chain_summary_df, background="#F8F2EB")
+                    alt.Chart(chain_summary_df, background="#FFFFFF")
                     .mark_bar()
                     .encode(
                         x=alt.X("CHAIN_NAME:N", title="Chain"),
@@ -163,12 +227,7 @@ def render() -> None:
     # 2a) Salesperson summary table + download (left)
     # ----------------------------------------------------------------------
     try:
-        query = """
-            SELECT SALESPERSON, TOTAL_DISTRIBUTION, TOTAL_GAPS, EXECUTION_PERCENTAGE
-            FROM SALESPERSON_EXECUTION_SUMMARY
-            ORDER BY TOTAL_GAPS DESC
-        """
-        salesperson_df = pd.read_sql_query(query, conn)
+        salesperson_df = fetch_salesperson_execution(conn, tenant_id)
 
         if not salesperson_df.empty:
             salesperson_df["EXECUTION_PERCENTAGE"] = (
@@ -198,11 +257,11 @@ def render() -> None:
             container_css = """
                 max-height: 365px;
                 overflow-y: auto;
-                background-color: #F8F2EB;
+                background-color: #F1F5F9;
                 text-align: center;
                 padding: 1% 2% 2% 0%;
                 border-radius: 10px;
-                border-left: 0.5rem solid #9AD8E1 !important;
+                border-left: 0.5rem solid #6497D6 !important;
                 box-shadow: 0 0.10rem 1.75rem 0 rgba(58, 59, 69, 0.15) !important;
                 width: 100%;
                 font-size: 0.85rem;
@@ -230,12 +289,7 @@ def render() -> None:
     # 2b) Gap History pivot + download + "Process Gap Pivot Data" (right)
     # ----------------------------------------------------------------------
     try:
-        gap_query = """
-            SELECT SALESPERSON, TOTAL_GAPS, EXECUTION_PERCENTAGE, LOG_DATE
-            FROM SALESPERSON_EXECUTION_SUMMARY_TBL
-            ORDER BY TOTAL_GAPS DESC
-        """
-        gap_df = pd.read_sql_query(gap_query, conn)
+        gap_df = fetch_gap_history(conn, tenant_id)
 
         if not gap_df.empty:
             # Prepare data for pivot: rename for readability in the UI layer
@@ -290,11 +344,11 @@ def render() -> None:
             container_css = """
                 max-height: 365px;
                 overflow-y: auto;
-                background-color: #F8F2EB;
+                background-color: #F1F5F9;
                 text-align: center;
                 padding: 1% 2% 2% 0%;
                 border-radius: 10px;
-                border-left: 0.5rem solid #9AD8E1 !important;
+                border-left: 0.5rem solid #6497D6 !important;
                 box-shadow: 0 0.10rem 1.75rem 0 rgba(58, 59, 69, 0.15) !important;
                 width: 100%;
                 font-size: 0.85rem;
@@ -357,7 +411,7 @@ def render() -> None:
     selected_suppliers = st.session_state.get("selected_suppliers", [])
     if selected_suppliers:
         try:
-            df_supplier = fetch_supplier_schematic_summary_data(conn, selected_suppliers)
+            df_supplier = fetch_supplier_schematic_summary_data(conn, tenant_id, tuple(selected_suppliers))
             if df_supplier is not None and not df_supplier.empty:
                 render_supplier_scatter(df_supplier)
             else:
