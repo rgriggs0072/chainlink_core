@@ -26,6 +26,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.4] — 2026-06-23
+
+### New Features
+- Add **Chainlink UPC Diagnostic Tool** — new admin-only page wired as the 3rd tab (🔬 UPC Diagnostic) in the Admin section; validates every product UPC in the tenant catalog: normalizes formats via `normalize_upc()`, verifies GS1 check digits for both UPC-A (12-digit) and EAN-13 (13-digit) barcodes, and optionally checks each barcode against the Open Food Facts database; results persist in session state across reruns
+- UPC Diagnostic Tool — optional **Barcode Database check** (checkbox, unchecked by default); when unchecked, only check digit validation and blank UPC detection run (faster, no internet required); when checked, full validation including barcode DB lookup runs with a progress bar
+- UPC Diagnostic Tool — **summary metrics** strip shows: Total Products / ✅ Valid UPCs / 🔧 Check Digit Corrected / ⚠️ Blank/Null UPC; adds ❌ Not Found in Barcode DB metric only when the barcode check was run
+- UPC Diagnostic Tool — **problem rows expander** auto-opened, label dynamically lists the count and which checks failed (check digit, barcode DB, or blank UPC); adjusts based on whether barcode DB check was run
+- UPC Diagnostic Tool — **dual download buttons** with live row counts: "⬇️ Download Full Results (Excel) — all N products" (all rows) and "⬇️ Download Problems Only (CSV) — N products needing review" (problem rows only); timestamped filenames
+
+### Bug Fixes
+- Fix UPC Diagnostic Tool incorrectly flagging valid EAN-13 barcodes as bad check digit — `_verify_check_digit()` now handles both UPC-A (12-digit: odd×3 + even×1) and EAN-13 (13-digit: odd×1 + even×3) algorithms; previously all barcodes were validated as UPC-A, causing false failures on imported products (e.g. Craft Spirits Coop)
+- Fix UPC Diagnostic Tool results disappearing on rerun — results now stored in `st.session_state.validation_results` so the display section survives widget interaction reruns without re-running validation
+
+### UI Changes
+- Rename all end-user-visible "Claude" references to "Chainlink AI": "What Claude Noticed" button/dialog → "What Chainlink AI Noticed" (`app_pages/home.py`); chat page header and subtitle → "Chainlink AI" and "Chainlink AI queries Snowflake directly" (`app_pages/ai_chat.py`); spinner → "Chainlink AI is thinking..." — function/variable names and API references unchanged
+- Rename "OFF" / "Open Food Facts" terminology in UPC Diagnostic Tool to "Barcode Database" throughout — column headers, button labels, checkbox label, and expander text
+- UPC Diagnostic Tool download buttons show dynamic product counts in labels so users know exactly what each file contains before downloading
+- Remove environment label (`[L] LOCAL`, `[D] DEV`) from sidebar footer — footer now shows version + copyright only
+- Update sidebar copyright from © 2025 to © 2026
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
+
 ## [v1.6.3] — 2026-06-17
 
 ### New Features
