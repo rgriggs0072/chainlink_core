@@ -16,9 +16,10 @@ Important:
   in schema.py). The formatter does not include SEASON anymore.
 """
 
-from typing import Literal
+from typing import Literal, Optional
 from io import BytesIO
 import os
+import re
 
 import pandas as pd
 import streamlit as st
@@ -81,6 +82,43 @@ def _normalize_header(c) -> str:
     s = s.strip().upper().replace(" ", "_")
     return s
 
+
+def detect_upload_layout(df: pd.DataFrame) -> Optional[str]:
+    """
+    Detect whether an uploaded DataFrame is standard or pivot layout,
+    based on its column headers alone (no data inspection).
+
+    Rules:
+    - A STORE_NUMBER column present -> "standard"
+    - UPC and Name/PRODUCT_NAME columns present, and every other column
+      header is purely numeric (store numbers as headers) -> "pivot"
+    - Neither pattern matches confidently -> None (unknown; caller should
+      fall back to whatever the user selected)
+
+    Header matching is tolerant of casing/whitespace, same as the rest of
+    this module. Used both by the guardrail (utils.distro_grid_helpers.
+    validate_store_numbers_for_chain) and by the UI to warn when the
+    selected format dropdown doesn't match what the file actually is.
+    """
+    normalized_to_original = {_normalize_header(c): c for c in df.columns}
+
+    if "STORE_NUMBER" in normalized_to_original:
+        return "standard"
+
+    has_upc = "UPC" in normalized_to_original
+    name_key = "NAME" if "NAME" in normalized_to_original else (
+        "PRODUCT_NAME" if "PRODUCT_NAME" in normalized_to_original else None
+    )
+
+    if has_upc and name_key:
+        id_cols = {normalized_to_original["UPC"], normalized_to_original[name_key]}
+        remaining = [c for c in df.columns if c not in id_cols]
+        if remaining and all(
+            re.fullmatch(r"\d+(\.0+)?", str(c).strip()) for c in remaining
+        ):
+            return "pivot"
+
+    return None
 
 
 # ---------------------------------------------------------------------

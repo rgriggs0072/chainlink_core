@@ -38,6 +38,7 @@ from utils.distro_grid.formatters import (
     format_uploaded_grid,
     build_standard_template_xlsx,
     build_pivot_template_xlsx,
+    detect_upload_layout,
 )
 from utils.distro_grid_helpers import (
     upload_distro_grid_to_snowflake,
@@ -319,9 +320,21 @@ def render_distro_grid_formatter_section():
                 conn=conn,
             )
 
-            # 2) Run formatting via the standardized formatter
-            layout = "standard" if selected_format == "Standard Column Format" else "pivot"
+            # 2) Detect the file's actual layout from its headers. If it
+            # disagrees with the dropdown, trust the file — warn, don't stop.
+            selected_layout = "standard" if selected_format == "Standard Column Format" else "pivot"
+            detected_layout = detect_upload_layout(raw_df)
 
+            if detected_layout is not None and detected_layout != selected_layout:
+                st.warning(
+                    f"⚠️ This file looks like a {detected_layout} file but you selected "
+                    f"{selected_layout} format. Continuing with detected format."
+                )
+                layout = detected_layout
+            else:
+                layout = selected_layout
+
+            # 3) Run formatting via the standardized formatter
             formatted_df = format_uploaded_grid(
                 df_raw=raw_df,
                 layout=layout,

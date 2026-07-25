@@ -23,6 +23,7 @@ Notes:
 from __future__ import annotations
 
 from datetime import datetime
+import re
 import socket
 
 import pandas as pd
@@ -31,6 +32,7 @@ import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 from utils.distro_grid.schema import infer_season_label
+from utils.distro_grid.formatters import detect_upload_layout
 from sf_connector.service_connector import connect_to_tenant_snowflake
 
 
@@ -812,10 +814,13 @@ def validate_store_numbers_for_chain(
     responsible for displaying st.error()/st.success()/st.stop() based
     on the returned result.
 
+    Layout (standard vs. pivot) is auto-detected from df's column headers
+    via detect_upload_layout() — not passed in — so this always validates
+    against what the file actually is, independent of what the user
+    selected in the format dropdown.
+
     Args:
-        df:         DataFrame containing a STORE_NUMBER column (raw or
-                    formatted upload — header matching is case/whitespace
-                    tolerant).
+        df:         Raw or formatted upload DataFrame.
         chain_name: Chain selected in the UI.
         tenant_id:  Current tenant identifier.
         conn:       Active Snowflake connection.
@@ -842,25 +847,37 @@ def validate_store_numbers_for_chain(
         "suggested_match_rate": None,
     }
 
-    # Find a column that normalizes to STORE_NUMBER, tolerant of casing/whitespace
-    store_col = None
-    for col in df.columns:
-        normalized = str(col).strip().upper().replace(" ", "_")
-        if normalized == "STORE_NUMBER":
-            store_col = col
-            break
+    detected_layout = detect_upload_layout(df)
 
-    if store_col is None:
-        return empty_result
+    if detected_layout == "pivot":
+        # No STORE_NUMBER column — store numbers are the column headers
+        # themselves, skipping the first two ID columns (UPC and Name).
+        file_store_numbers = set()
+        for col in df.columns[2:]:
+            match = re.search(r"(\d+)", str(col))
+            if match:
+                file_store_numbers.add(int(match.group(1)))
+    else:
+        # Standard layout (or undetected — fall back to looking for a
+        # STORE_NUMBER column). Tolerant of casing/whitespace.
+        store_col = None
+        for col in df.columns:
+            normalized = str(col).strip().upper().replace(" ", "_")
+            if normalized == "STORE_NUMBER":
+                store_col = col
+                break
 
-    # STORE_NUMBER may arrive as float (e.g. 1.0) from pandas/Excel reads
-    file_store_numbers = set(
-        pd.to_numeric(df[store_col], errors="coerce")
-        .dropna()
-        .astype(int)
-        .unique()
-        .tolist()
-    )
+        if store_col is None:
+            return empty_result
+
+        # STORE_NUMBER may arrive as float (e.g. 1.0) from pandas/Excel reads
+        file_store_numbers = set(
+            pd.to_numeric(df[store_col], errors="coerce")
+            .dropna()
+            .astype(int)
+            .unique()
+            .tolist()
+        )
 
     total_count = len(file_store_numbers)
     if total_count == 0:
