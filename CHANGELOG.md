@@ -10,11 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > Work in progress on `dev` branch. Move items here to the next version block on release.
 
 ### In Progress
-- Distro Grid template simplification — reducing standard upload template
-  to mandatory fields only (STORE_NUMBER, UPC, PRODUCT_NAME, YES_NO);
-  pivot template reduced to (UPC, Name, store columns); SKU and
-  ACTIVATION_STATUS dropped from DISTRO_GRID table; code audit underway
-  prior to implementation
+- None
 
 ### New Features
 - None
@@ -24,6 +20,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### UI Changes
 - None
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
+
+## [v1.6.5] — 2026-07-24
+
+### New Features
+- Store number chain validation guardrail: cross-validates uploaded
+  file store numbers against CUSTOMERS table before formatting runs.
+  Hard stop if fewer than 90% of store numbers match the selected
+  chain, with suggestion of best-matching alternative chain.
+
+### Bug Fixes
+- None
+
+### UI Changes
+- Distro Grid upload templates simplified — standard template reduced
+  to STORE_NUMBER, UPC, PRODUCT_NAME, YES_NO; pivot template reduced
+  to UPC, Name, plus store-number columns. SKU, ACTIVATION_STATUS, and
+  SEGMENT removed from all Python upload/formatting code paths
+  (Snowflake table columns unchanged — schema migration deferred to
+  Phase B). Pivot formatter no longer requires MANUFACTURER from the
+  client file; it's omitted from the insert so Snowflake defaults it
+  to NULL, then UPDATE_DISTRO_GRID backfills it post-insert, same as
+  COUNTY.
 
 ### Snowflake / DB Changes
 - None
