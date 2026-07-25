@@ -16,13 +16,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - None
 
 ### Bug Fixes
-- Fix store number chain validation guardrail (v1.6.5) failing pivot
-  uploads with "No STORE_NUMBER values found" — pivot files have no
-  STORE_NUMBER column; store numbers are the column headers. Added
-  `detect_upload_layout()` (header-based, no data inspection) and used
-  it in both the guardrail and the Distro Grid formatter UI, which now
-  warns and self-corrects if the selected format dropdown doesn't
-  match what the uploaded file actually is, instead of hard-failing.
+- None
 
 ### UI Changes
 - None
@@ -44,7 +38,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   chain, with suggestion of best-matching alternative chain.
 
 ### Bug Fixes
-- None
+- Fix store number chain validation guardrail failing pivot uploads
+  with "No STORE_NUMBER values found" — pivot files have no
+  STORE_NUMBER column; store numbers are the column headers. Added
+  `detect_upload_layout()` (header-based, no data inspection) and used
+  it in both the guardrail and the Distro Grid formatter UI, which now
+  warns and self-corrects if the selected format dropdown doesn't
+  match what the uploaded file actually is, instead of hard-failing.
 
 ### UI Changes
 - Distro Grid upload templates simplified — standard template reduced
