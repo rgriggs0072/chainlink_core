@@ -23,6 +23,7 @@ Notes:
 from __future__ import annotations
 
 from datetime import datetime
+import re
 import socket
 
 import pandas as pd
@@ -31,6 +32,7 @@ import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 from utils.distro_grid.schema import infer_season_label
+from utils.distro_grid.formatters import detect_upload_layout
 from sf_connector.service_connector import connect_to_tenant_snowflake
 
 
@@ -215,7 +217,6 @@ def format_pivot_table(workbook, selected_option):
         columns={
             "Name": "PRODUCT_NAME",
             "Yes/No": "YES_NO",
-            "SKU": "SKU",
         },
         inplace=True,
     )
@@ -244,8 +245,6 @@ def format_pivot_table(workbook, selected_option):
     df_melted["UPC"] = temp_upc_numeric
 
     # Add required empty columns
-    df_melted["SKU"] = 0
-    df_melted["ACTIVATION_STATUS"] = ""
     df_melted["COUNTY"] = ""
     df_melted["CHAIN_NAME"] = selected_option
     df_melted["STORE_NAME"] = selected_option
@@ -541,13 +540,9 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
             "STORE_NAME",
             "STORE_NUMBER",
             "UPC",
-            "SKU",
             "PRODUCT_ID",
             "PRODUCT_NAME",
-            "MANUFACTURER",
-            "SEGMENT",
             "YES_NO",
-            "ACTIVATION_STATUS",
             "COUNTY",
             "TENANT_ID",
         ]
@@ -566,10 +561,7 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         nullable = {
             "CUSTOMER_ID",
             "PRODUCT_ID",
-            "MANUFACTURER",
             "COUNTY",
-            "SEGMENT",
-            "ACTIVATION_STATUS",
         }
         for i, row in enumerate(records):
             for j, val in enumerate(row):
@@ -801,3 +793,158 @@ def enrich_with_customer_data(distro_df: pd.DataFrame, conn) -> pd.DataFrame:
         merged["COUNTY"] = None
 
     return merged
+
+
+# ====================================================================================================================
+# Store number / chain validation guardrail
+# ====================================================================================================================
+
+def validate_store_numbers_for_chain(
+    df: pd.DataFrame,
+    chain_name: str,
+    tenant_id: str,
+    conn,
+    threshold: float = 0.90,
+) -> dict:
+    """
+    Validates that STORE_NUMBER values in an uploaded distro grid file
+    match active stores for the selected chain in CUSTOMERS.
+
+    Pure function — no Streamlit calls. The caller (UI layer) is
+    responsible for displaying st.error()/st.success()/st.stop() based
+    on the returned result.
+
+    Layout (standard vs. pivot) is auto-detected from df's column headers
+    via detect_upload_layout() — not passed in — so this always validates
+    against what the file actually is, independent of what the user
+    selected in the format dropdown.
+
+    Args:
+        df:         Raw or formatted upload DataFrame.
+        chain_name: Chain selected in the UI.
+        tenant_id:  Current tenant identifier.
+        conn:       Active Snowflake connection.
+        threshold:  Minimum match rate required to pass (default 0.90).
+
+    Returns:
+        {
+            "passed": bool,
+            "match_rate": float,
+            "matched_count": int,
+            "total_count": int,
+            "suggested_chain": str | None,
+            "suggested_match_rate": float | None,
+        }
+    """
+    chain_upper = chain_name.strip().upper()
+
+    empty_result = {
+        "passed": False,
+        "match_rate": 0.0,
+        "matched_count": 0,
+        "total_count": 0,
+        "suggested_chain": None,
+        "suggested_match_rate": None,
+    }
+
+    detected_layout = detect_upload_layout(df)
+
+    if detected_layout == "pivot":
+        # No STORE_NUMBER column — store numbers are the column headers
+        # themselves, skipping the first two ID columns (UPC and Name).
+        file_store_numbers = set()
+        for col in df.columns[2:]:
+            match = re.search(r"(\d+)", str(col))
+            if match:
+                file_store_numbers.add(int(match.group(1)))
+    else:
+        # Standard layout (or undetected — fall back to looking for a
+        # STORE_NUMBER column). Tolerant of casing/whitespace.
+        store_col = None
+        for col in df.columns:
+            normalized = str(col).strip().upper().replace(" ", "_")
+            if normalized == "STORE_NUMBER":
+                store_col = col
+                break
+
+        if store_col is None:
+            return empty_result
+
+        # STORE_NUMBER may arrive as float (e.g. 1.0) from pandas/Excel reads
+        file_store_numbers = set(
+            pd.to_numeric(df[store_col], errors="coerce")
+            .dropna()
+            .astype(int)
+            .unique()
+            .tolist()
+        )
+
+    total_count = len(file_store_numbers)
+    if total_count == 0:
+        return empty_result
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT C.STORE_NUMBER
+            FROM CUSTOMERS C
+            WHERE C.CHAIN_NAME = %s
+              AND C.ACCOUNT_STATUS = 'ACTIVE'
+              AND C.TENANT_ID = %s
+            """,
+            (chain_upper, tenant_id),
+        )
+        chain_store_numbers = {int(row[0]) for row in cur.fetchall() if row[0] is not None}
+
+        matched = file_store_numbers & chain_store_numbers
+        matched_count = len(matched)
+        match_rate = matched_count / total_count
+
+        passed = match_rate >= threshold
+
+        suggested_chain = None
+        suggested_match_rate = None
+
+        if not passed:
+            # Look for a better-matching chain to suggest
+            cur.execute(
+                """
+                SELECT DISTINCT C.CHAIN_NAME, C.STORE_NUMBER
+                FROM CUSTOMERS C
+                WHERE C.ACCOUNT_STATUS = 'ACTIVE'
+                  AND C.TENANT_ID = %s
+                  AND C.CHAIN_NAME != %s
+                """,
+                (tenant_id, chain_upper),
+            )
+
+            other_chain_stores: dict[str, set[int]] = {}
+            for row_chain, row_store in cur.fetchall():
+                if row_store is None:
+                    continue
+                other_chain_stores.setdefault(row_chain, set()).add(int(row_store))
+
+            best_chain = None
+            best_rate = 0.0
+            for candidate_chain, candidate_stores in other_chain_stores.items():
+                candidate_rate = len(file_store_numbers & candidate_stores) / total_count
+                if candidate_rate > best_rate:
+                    best_rate = candidate_rate
+                    best_chain = candidate_chain
+
+            # Only surface a suggestion if it's meaningfully better than the selection
+            if best_chain is not None and best_rate >= 0.50:
+                suggested_chain = best_chain
+                suggested_match_rate = best_rate
+
+        return {
+            "passed": passed,
+            "match_rate": match_rate,
+            "matched_count": matched_count,
+            "total_count": total_count,
+            "suggested_chain": suggested_chain,
+            "suggested_match_rate": suggested_match_rate,
+        }
+    finally:
+        cur.close()

@@ -16,9 +16,10 @@ Important:
   in schema.py). The formatter does not include SEASON anymore.
 """
 
-from typing import Literal
+from typing import Literal, Optional
 from io import BytesIO
 import os
+import re
 
 import pandas as pd
 import streamlit as st
@@ -82,6 +83,43 @@ def _normalize_header(c) -> str:
     return s
 
 
+def detect_upload_layout(df: pd.DataFrame) -> Optional[str]:
+    """
+    Detect whether an uploaded DataFrame is standard or pivot layout,
+    based on its column headers alone (no data inspection).
+
+    Rules:
+    - A STORE_NUMBER column present -> "standard"
+    - UPC and Name/PRODUCT_NAME columns present, and every other column
+      header is purely numeric (store numbers as headers) -> "pivot"
+    - Neither pattern matches confidently -> None (unknown; caller should
+      fall back to whatever the user selected)
+
+    Header matching is tolerant of casing/whitespace, same as the rest of
+    this module. Used both by the guardrail (utils.distro_grid_helpers.
+    validate_store_numbers_for_chain) and by the UI to warn when the
+    selected format dropdown doesn't match what the file actually is.
+    """
+    normalized_to_original = {_normalize_header(c): c for c in df.columns}
+
+    if "STORE_NUMBER" in normalized_to_original:
+        return "standard"
+
+    has_upc = "UPC" in normalized_to_original
+    name_key = "NAME" if "NAME" in normalized_to_original else (
+        "PRODUCT_NAME" if "PRODUCT_NAME" in normalized_to_original else None
+    )
+
+    if has_upc and name_key:
+        id_cols = {normalized_to_original["UPC"], normalized_to_original[name_key]}
+        remaining = [c for c in df.columns if c not in id_cols]
+        if remaining and all(
+            re.fullmatch(r"\d+(\.0+)?", str(c).strip()) for c in remaining
+        ):
+            return "pivot"
+
+    return None
+
 
 # ---------------------------------------------------------------------
 # Template builders
@@ -92,37 +130,23 @@ def build_standard_template_df() -> pd.DataFrame:
     Build a minimal standard Distro Grid template DataFrame.
 
     Notes:
-    - Includes CHAIN_NAME column so users can see it, but the app will
-      overwrite it at runtime with the selected chain.
+    - CHAIN_NAME is injected by the app at format time and is not part of
+      the client-facing template.
     - Does NOT include SEASON; season is inferred at upload time and only
       written into DG_ARCHIVE_TRACKING, not DISTRO_GRID.
     """
     cols = [
-        "CHAIN_NAME",
-        "STORE_NAME",
         "STORE_NUMBER",
-        "COUNTY",
         "UPC",
-        "SKU",
         "PRODUCT_NAME",
-        "MANUFACTURER",
-        "SEGMENT",
         "YES_NO",
-        "ACTIVATION_STATUS",
     ]
 
     data = [{
-        "CHAIN_NAME": "SAMPLE CHAIN NAME",
-        "STORE_NAME": "SAMPLE STORE NAME",
         "STORE_NUMBER": 1234,
-        "COUNTY": "",
         "UPC": "012345678901",
-        "SKU": "",
         "PRODUCT_NAME": "Sample Product",
-        "MANUFACTURER": "",
-        "SEGMENT": "",
         "YES_NO": 1,
-        "ACTIVATION_STATUS": "",
     }]
 
     return pd.DataFrame(data, columns=cols)
@@ -147,19 +171,16 @@ def build_pivot_template_df() -> pd.DataFrame:
     """
     Build a pivot-style Distro Grid template DataFrame.
 
-    Layout (matches legacy Pivot_Table_Distro_Grid_Template.xlsx):
+    Layout:
     - UPC
-    - SKU #
     - Name
-    - Manufacturer
-    - SEGMENT
     - 1, 2, 3, ..., 53  (store-number columns)
 
     Notes:
     - We don't try to be clever with store names here; we only model store
       numbers as columns. STORE_NAME is resolved later via CUSTOMERS.
     """
-    id_cols = ["UPC", "SKU #", "Name", "Manufacturer", "SEGMENT"]
+    id_cols = ["UPC", "Name"]
     store_cols = list(range(1, 54))  # 1..53
 
     cols = id_cols + store_cols
@@ -167,10 +188,7 @@ def build_pivot_template_df() -> pd.DataFrame:
     # Single example row, mostly empty; users will overwrite.
     data = [{
         "UPC": "012345678901",
-        "SKU #": "",
         "Name": "Sample Product Name",
-        "Manufacturer": "Sample Manufacturer",
-        "SEGMENT": "Sample Segment",
         **{c: "" for c in store_cols},
     }]
 
@@ -240,10 +258,6 @@ def format_uploaded_grid(
             if pd.notna(x) and str(x).strip() not in ("", "0")
             else str(x)
         )
-
-    # Fill empty SKU with 0 (NUMBER(20,0) column)
-    if "SKU" in df.columns:
-        df["SKU"] = df["SKU"].fillna(0).astype(int)
 
     # Ensure all required upload columns exist
     for col_name, spec in UPLOAD_COLUMNS.items():
@@ -353,23 +367,20 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
 
     Input layout (after header normalization in format_uploaded_grid):
     - UPC
-    - SKU_#
     - NAME
-    - MANUFACTURER
-    - SEGMENT
     - 1, 2, 3, ..., 53  (store-number columns)
 
     Output layout (columns, BEFORE CHAIN_NAME injection):
     - STORE_NAME     (blank; enriched later from CUSTOMERS)
     - STORE_NUMBER   (Int64)
-    - COUNTY         (blank)
+    - COUNTY         (blank; backfilled by UPDATE_DISTRO_GRID SP)
     - UPC
-    - SKU
     - PRODUCT_NAME
-    - MANUFACTURER
-    - SEGMENT
     - YES_NO         (0/1, Int64)
-    - ACTIVATION_STATUS (blank)
+
+    Note: MANUFACTURER is not part of this output — it's omitted from
+    insert_columns in distro_grid_helpers.py so Snowflake defaults it to
+    NULL, then UPDATE_DISTRO_GRID backfills it post-insert.
     """
     df = df.copy()
 
@@ -381,12 +392,7 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
     if "NAME" in df.columns and "PRODUCT_NAME" not in df.columns:
         df.rename(columns={"NAME": "PRODUCT_NAME"}, inplace=True)
 
-    # Some pivot exports might use SKU instead of SKU_#
-    if "SKU" in df.columns and "SKU_#" not in df.columns:
-        df.rename(columns={"SKU": "SKU_#"}, inplace=True)
-
-
-    id_cols = ["UPC", "SKU_#", "PRODUCT_NAME", "MANUFACTURER", "SEGMENT"]
+    id_cols = ["UPC", "PRODUCT_NAME"]
     for col in id_cols:
         if col not in df.columns:
             raise ValueError(f"Pivot upload is missing required column '{col}'")
@@ -450,23 +456,12 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
             f"{bad_upcs[:5]}{'...' if len(bad_upcs) > 5 else ''}"
         )
 
-    # SKU cleanup from SKU_#
-    out["SKU"] = (
-        melted["SKU_#"]
-        .fillna("")
-        .astype(str)
-        .str.replace(r"\.0$", "", regex=True)
-        .str.strip()
-    )
-
-    # Product + manufacturer + segment
     out["PRODUCT_NAME"] = melted["PRODUCT_NAME"].astype(str).str.strip()
-    out["MANUFACTURER"] = melted["MANUFACTURER"].astype(str).str.strip()
-    out["SEGMENT"] = melted["SEGMENT"].astype(str).str.strip()
 
-    # County + activation status as blank placeholders
+    # County as a blank placeholder; backfilled by the UPDATE_DISTRO_GRID SP
+    # post-insert. MANUFACTURER is omitted entirely (not in insert_columns)
+    # so Snowflake defaults it to NULL, then the SP backfills it as well.
     out["COUNTY"] = ""
-    out["ACTIVATION_STATUS"] = ""
 
     out["YES_NO"] = melted["YES_NO"]
 
@@ -477,12 +472,8 @@ def _format_pivot(df: pd.DataFrame) -> pd.DataFrame:
         "STORE_NUMBER",
         "COUNTY",
         "UPC",
-        "SKU",
         "PRODUCT_NAME",
-        "MANUFACTURER",
-        "SEGMENT",
         "YES_NO",
-        "ACTIVATION_STATUS",
     ]
     out = out[desired_order]
 

@@ -9,6 +9,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 > Work in progress on `dev` branch. Move items here to the next version block on release.
 
+### In Progress
+- None
+
 ### New Features
 - None
 
@@ -17,6 +20,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### UI Changes
 - None
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- None
+
+---
+
+## [v1.6.5] — 2026-07-24
+
+### New Features
+- Store number chain validation guardrail: cross-validates uploaded
+  file store numbers against CUSTOMERS table before formatting runs.
+  Hard stop if fewer than 90% of store numbers match the selected
+  chain, with suggestion of best-matching alternative chain.
+
+### Bug Fixes
+- Fix store number chain validation guardrail failing pivot uploads
+  with "No STORE_NUMBER values found" — pivot files have no
+  STORE_NUMBER column; store numbers are the column headers. Added
+  `detect_upload_layout()` (header-based, no data inspection) and used
+  it in both the guardrail and the Distro Grid formatter UI, which now
+  warns and self-corrects if the selected format dropdown doesn't
+  match what the uploaded file actually is, instead of hard-failing.
+
+### UI Changes
+- Distro Grid upload templates simplified — standard template reduced
+  to STORE_NUMBER, UPC, PRODUCT_NAME, YES_NO; pivot template reduced
+  to UPC, Name, plus store-number columns. SKU, ACTIVATION_STATUS, and
+  SEGMENT removed from all Python upload/formatting code paths
+  (Snowflake table columns unchanged — schema migration deferred to
+  Phase B). Pivot formatter no longer requires MANUFACTURER from the
+  client file; it's omitted from the insert so Snowflake defaults it
+  to NULL, then UPDATE_DISTRO_GRID backfills it post-insert, same as
+  COUNTY.
 
 ### Snowflake / DB Changes
 - None
