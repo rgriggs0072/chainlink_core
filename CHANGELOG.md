@@ -29,6 +29,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.7] — 2026-07-25
+
+### New Features
+- Added TENANT_ID to DG_ARCHIVE_TRACKING table and archive guard
+  check for multi-tenant safety — prevents cross-tenant archive
+  collisions when running multiple tenants in a shared database
+
+### Bug Fixes
+- None
+
+### UI Changes
+- None
+
+### Snowflake / DB Changes
+- `DG_ARCHIVE_TRACKING` on both Summit Beverage (tenant 9002) and
+  Delta Pacific (tenant 9001) — added `TENANT_ID` column, backfilled
+  existing rows with each tenant's ID, and replaced the
+  `(CHAIN_NAME, SEASON)` primary key with a
+  `(CHAIN_NAME, SEASON, TENANT_ID)` composite key. `distro_grid_helpers.py`
+  archive guard check and archive tracking INSERT updated to match
+  ahead of each tenant's migration
+
+### Breaking Changes
+- None
+
+---
+
 ## [v1.6.6] — 2026-07-25
 
 ### New Features
