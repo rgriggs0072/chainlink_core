@@ -117,7 +117,6 @@ def get_current_and_archived_distro(conn, chain, season):
             dg.STORE_NUMBER,
             dg.UPC,
             dg.PRODUCT_NAME,
-            dg.SEGMENT,
             dg.MANUFACTURER,
             dg.COUNTY,
             CASE
@@ -154,7 +153,6 @@ def get_current_and_archived_distro(conn, chain, season):
             dga.STORE_NUMBER,
             dga.UPC,
             dga.PRODUCT_NAME,
-            dga.SEGMENT,
             dga.MANUFACTURER,
             dga.COUNTY,
             CASE
