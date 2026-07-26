@@ -446,14 +446,21 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
         df["TENANT_ID"] = tenant_id
         df["PRODUCT_ID"] = None
 
+    # DG_ARCHIVE_TRACKING is now tenant-scoped (CHAIN_NAME, SEASON, TENANT_ID).
+    # Pull from df rather than the local `tenant_id` var above, since that var
+    # is only assigned when TENANT_ID was missing from df — by the time this
+    # function runs, df["TENANT_ID"] is always present (set here or by the
+    # caller), so it's the reliable source for a single-chain upload batch.
+    tracking_tenant_id = df["TENANT_ID"].iloc[0]
+
     try:
         # Begin explicit transaction — nothing commits until we say so
         conn.autocommit(False)
 
-        # 🔍 Step 1: Check archive tracking — only archive once per chain+season
+        # 🔍 Step 1: Check archive tracking — only archive once per chain+season+tenant
         cur.execute(
-            f"SELECT 1 FROM {archive_tracking_table} WHERE CHAIN_NAME = %s AND SEASON = %s",
-            (chain_upper, season),
+            f"SELECT 1 FROM {archive_tracking_table} WHERE CHAIN_NAME = %s AND SEASON = %s AND TENANT_ID = %s",
+            (chain_upper, season, tracking_tenant_id),
         )
         already_archived = cur.fetchone() is not None
 
@@ -517,10 +524,10 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
             # FULL_ARCHIVED_AT and MATCHED_ARCHIVED_AT are stamped together
             # since both archives are written in the same transaction.
             cur.execute(f"""
-                INSERT INTO {archive_tracking_table} 
-                    (CHAIN_NAME, SEASON, FULL_ARCHIVED_AT, MATCHED_ARCHIVED_AT)
-                VALUES (%s, %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
-            """, (chain_upper, season))
+                INSERT INTO {archive_tracking_table}
+                    (CHAIN_NAME, SEASON, TENANT_ID, FULL_ARCHIVED_AT, MATCHED_ARCHIVED_AT)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+            """, (chain_upper, season, tracking_tenant_id))
 
         else:
             st.warning(
