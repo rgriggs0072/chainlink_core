@@ -29,6 +29,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.8] — 2026-07-25
+
+### New Features
+- Reset Schedule store number chain-match guardrail — same 90% match
+  threshold and best-chain suggestion as Distro Grid, now shared via
+  `validate_store_numbers_for_chain()` in `load_company_data_helpers.py`
+  and rendered via `apply_store_number_guardrail()` in `ui_helpers.py`.
+  Fires in both the formatter and uploader sections.
+
+### Bug Fixes
+- Fixed SQL injection gap in Reset Schedule's DELETE query — was
+  interpolating `selected_chain` directly into the SQL string; now
+  bound as a parameter (`TRIM(UPPER(CHAIN_NAME)) = %s`), matching
+  Distro Grid's pattern and `SKILLS.md`'s bound-parameter rule.
+
+### UI Changes
+- Reset Schedule upload template simplified from 13 columns to 3 —
+  `STORE_NUMBER | RESET_DATE | RESET_TIME`. CHAIN_NAME/STORE_NAME
+  (already built) and ADDRESS/CITY/COUNTY (new) are now enriched from
+  CUSTOMERS at format time instead of client-provided; STATE is
+  injected as a blank placeholder (not available on CUSTOMERS).
+  Formatter section (Step 1) now has a chain selector, required for
+  the CUSTOMERS lookup and the guardrail.
+
+### Snowflake / DB Changes
+- Dropped `PHONE_NUMBER`, `TEAM_LEAD`, `STATUS`, `NOTES` from
+  `RESET_SCHEDULE` on Summit Beverage (tenant 9002); confirmed unused
+  by any downstream feature via full codebase audit. Delta Pacific
+  (tenant 9001) migration pending Randy's sign-off after Summit
+  validation.
+
+### Breaking Changes
+- `PHONE_NUMBER`, `TEAM_LEAD`, `STATUS`, and `NOTES` no longer exist
+  on `RESET_SCHEDULE` for Summit Beverage (Delta Pacific pending).
+  The admin inline editor (Section 3) no longer displays STATUS/NOTES
+  — removed from its SELECT and column config to avoid an
+  invalid-identifier SQL error against the migrated schema.
+
+---
+
 ## [v1.6.7] — 2026-07-25
 
 ### New Features

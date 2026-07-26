@@ -96,9 +96,10 @@ def detect_upload_layout(df: pd.DataFrame) -> Optional[str]:
       fall back to whatever the user selected)
 
     Header matching is tolerant of casing/whitespace, same as the rest of
-    this module. Used both by the guardrail (utils.distro_grid_helpers.
-    validate_store_numbers_for_chain) and by the UI to warn when the
-    selected format dropdown doesn't match what the file actually is.
+    this module. Used both by the guardrail (utils.load_company_data_helpers.
+    validate_store_numbers_for_chain, shared by Distro Grid and Reset
+    Schedule) and by the UI to warn when the selected format dropdown
+    doesn't match what the file actually is.
     """
     normalized_to_original = {_normalize_header(c): c for c in df.columns}
 

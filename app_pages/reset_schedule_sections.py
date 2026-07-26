@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from openpyxl import Workbook
 from datetime import datetime, date, time
 from io import BytesIO
 
@@ -10,8 +11,9 @@ from utils.reset_schedule_helpers import (
     format_reset_schedule,
     upload_reset_data,
     generate_reset_schedule_template,
+    enrich_reset_schedule_with_customer_data,
 )
-from utils.ui_helpers import download_workbook
+from utils.ui_helpers import download_workbook, apply_store_number_guardrail
 from utils.snowflake_utils import fetch_distinct_values
 from sf_connector.service_connector import connect_to_tenant_snowflake
 from utils.load_company_data_helpers import load_chain_stores, validate_and_enrich_chain_file
@@ -24,10 +26,32 @@ from utils.load_company_data_helpers import load_chain_stores, validate_and_enri
 def render_reset_schedule_formatter_section():
     """
     Step 1: Download template + validate/format uploaded file.
+
     Fix (2026-03-25): Wrapped file_uploader in st.form to prevent CP reruns
     from dropping the uploaded file before it can be read.
+
+    v1.6.8: Template simplified to STORE_NUMBER/RESET_DATE/RESET_TIME only.
+    CHAIN_NAME/STORE_NAME/ADDRESS/CITY/COUNTY are enriched from CUSTOMERS
+    here (STATE injected blank — not available on CUSTOMERS). Added a chain
+    selector (needed for the CUSTOMERS lookup and the store-number
+    guardrail below) and the same 90% store-number chain-match guardrail
+    used by Distro Grid.
     """
     st.markdown("Download the Reset Schedule template, fill it in, then upload it here for validation and formatting.")
+
+    conn = st.session_state.get("conn")
+    if not conn:
+        st.error("Database connection not found.")
+        return
+
+    try:
+        chain_options = fetch_distinct_values(conn, "CUSTOMERS", "CHAIN_NAME")
+        chain_options.sort()
+    except Exception as e:
+        st.error(f"Could not load chain names: {e}")
+        return
+
+    chain_options_with_placeholder = ["Select Chain"] + chain_options
 
     # Download template (must be outside form — download buttons can't be inside forms)
     tmpl_wb = generate_reset_schedule_template()
@@ -47,19 +71,27 @@ def render_reset_schedule_formatter_section():
         """
         <small>
         Required columns per row:<br>
-        • <b>CHAIN_NAME</b> &nbsp;•&nbsp; <b>STORE_NUMBER</b> &nbsp;•&nbsp; <b>STORE_NAME</b><br>
-        • <b>ADDRESS</b> &nbsp;•&nbsp; <b>CITY</b><br>
+        • <b>STORE_NUMBER</b><br>
         • <b>RESET_DATE</b> (mm/dd/yyyy or Excel date)<br>
         • <b>RESET_TIME</b> (e.g. '8:00 AM' or '13:00')<br>
+        <br>
+        CHAIN_NAME, STORE_NAME, ADDRESS, CITY, and COUNTY are filled in
+        automatically from your customer data based on the chain you
+        select below.
         </small>
         """,
         unsafe_allow_html=True,
     )
 
     st.markdown("---")
-    st.markdown("**Upload completed template for validation & formatting:**")
+    st.markdown("**Select chain and upload completed template for validation & formatting:**")
 
     with st.form("reset_schedule_formatter_form"):
+        selected_chain = st.selectbox(
+            "Select Chain Name for This Format",
+            chain_options_with_placeholder,
+            key="reset_schedule_format_chain_select",
+        )
         uploaded_file = st.file_uploader(
             "Upload Reset Schedule Excel (based on the template)",
             type=["xlsx"],
@@ -70,24 +102,98 @@ def render_reset_schedule_formatter_section():
     if not submitted:
         return
 
+    if selected_chain == "Select Chain":
+        st.warning("Please select a chain before formatting.")
+        return
+
     if uploaded_file is None:
         st.warning("Please upload a Reset Schedule Excel file before submitting.")
         return
 
     try:
-        workbook = openpyxl.load_workbook(uploaded_file)
+        # Read the upload once into bytes — reused below for both the
+        # DataFrame (guardrail) and the openpyxl Workbook
+        # (format_reset_schedule), since the uploaded file's buffer can't
+        # safely be read twice (Streamlit Cloud exhausts it on the second
+        # read — see SKILLS.md "File buffer reads").
+        file_bytes = uploaded_file.read()
+        tenant_id = st.session_state.get("tenant_id")
+
         with st.spinner("Validating and formatting reset schedule..."):
+            # Guardrail: cross-validate STORE_NUMBER values against
+            # CUSTOMERS for the selected chain, before any formatting runs.
+            raw_df = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+            apply_store_number_guardrail(
+                df=raw_df,
+                chain_name=selected_chain,
+                tenant_id=tenant_id,
+                conn=conn,
+            )
+
+            workbook = openpyxl.load_workbook(BytesIO(file_bytes))
             formatted_wb = format_reset_schedule(workbook)
 
-        if formatted_wb:
+            out_wb = None
+            record_count = 0
+
+            if formatted_wb:
+                # Convert the validated 3-column sheet to a DataFrame so we
+                # can enrich it from CUSTOMERS.
+                ws = formatted_wb["RESET_SCHEDULE_TEMPLATE"]
+                data = list(ws.values)
+                header, body = data[0], data[1:]
+                df = pd.DataFrame(body, columns=header).dropna(how="all")
+
+                selected_chain_upper = selected_chain.strip().upper()
+
+                chain_store_lookup = load_chain_stores(conn, tenant_id, selected_chain_upper)
+                if not chain_store_lookup:
+                    st.error(
+                        f"⛔ No active stores found for **{selected_chain_upper}** "
+                        f"in your customer data. Upload your customer file first."
+                    )
+                    return
+
+                df, enrich_errors, enrich_warnings = validate_and_enrich_chain_file(
+                    df, selected_chain_upper, chain_store_lookup
+                )
+                if enrich_errors:
+                    st.error("⛔ Cannot format — please resolve the following issues:")
+                    for err in enrich_errors:
+                        st.markdown(err)
+                    return
+                for warn in enrich_warnings:
+                    st.warning(warn)
+
+                df = enrich_reset_schedule_with_customer_data(
+                    df, selected_chain_upper, tenant_id, conn
+                )
+
+                # Present columns in a sensible order for the reviewer
+                df = df[[
+                    "CHAIN_NAME", "STORE_NUMBER", "STORE_NAME",
+                    "ADDRESS", "CITY", "STATE", "COUNTY",
+                    "RESET_DATE", "RESET_TIME",
+                ]]
+
+                record_count = len(df)
+
+                out_wb = Workbook()
+                out_ws = out_wb.active
+                out_ws.title = "RESET_SCHEDULE_TEMPLATE"
+                out_ws.append(list(df.columns))
+                for row in df.itertuples(index=False, name=None):
+                    out_ws.append(list(row))
+
+        if out_wb is not None:
             st.success("✅ Formatting complete. Download to review before upload.")
-            record_count = formatted_wb.active.max_row - 1  # subtract header row
             st.info(
                 f"**📋 Format Summary**\n\n"
+                f"- **Chain:** {selected_chain}\n"
                 f"- **Records:** {record_count:,}\n\n"
                 f"⚠️ If you selected the wrong chain, stop here and re-select before downloading."
             )
-            download_workbook(formatted_wb, "Formatted_Reset_Schedule.xlsx")
+            download_workbook(out_wb, "Formatted_Reset_Schedule.xlsx")
     except Exception as e:
         st.error(f"Failed to format reset schedule: {e}")
 
@@ -101,6 +207,11 @@ def render_reset_schedule_uploader_section():
     Upload formatted reset schedule to Snowflake.
     Fix (2026-03-25): Wrapped in st.form to prevent CP reruns from dropping
     the uploaded file. Added chain name mismatch validation before upload.
+
+    v1.6.8: Added the store-number chain-match guardrail (belt-and-
+    suspenders with Section 1) and re-runs the ADDRESS/CITY/COUNTY/STATE
+    enrichment in case a hand-edited or older-shape file is uploaded
+    directly here without going through Section 1 first.
     """
     conn = st.session_state.get("conn")
     if not conn:
@@ -158,9 +269,17 @@ def render_reset_schedule_uploader_section():
                 )
                 return
 
-        # --- STORE_NUMBER / CHAIN_NAME / STORE_NAME validation + enrichment ---
-        conn = st.session_state.get("conn")
+        # Guardrail: cross-validate STORE_NUMBER values against CUSTOMERS
+        # for the selected chain, before any upload runs.
         tenant_id = st.session_state.get("tenant_id")
+        apply_store_number_guardrail(
+            df=df,
+            chain_name=selected_chain,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
+
+        # --- STORE_NUMBER / CHAIN_NAME / STORE_NAME validation + enrichment ---
         selected_chain_upper = selected_chain.strip().upper()
         chain_store_lookup = load_chain_stores(conn, tenant_id, selected_chain_upper)
         if not chain_store_lookup:
@@ -180,6 +299,9 @@ def render_reset_schedule_uploader_section():
         for warn in enrich_warnings:
             st.warning(warn)
 
+        # ADDRESS / CITY / COUNTY / STATE enrichment
+        df = enrich_reset_schedule_with_customer_data(df, selected_chain_upper, tenant_id, conn)
+
         with st.spinner("Uploading to database..."):
             upload_reset_data(df, selected_chain)
 
@@ -196,6 +318,10 @@ def render_reset_schedule_editor_section():
     Admin-only inline editor for RESET_DATE and RESET_TIME fields.
     Uses st.data_editor to allow in-table editing without a full re-upload.
     Only changed rows are written back to Snowflake via UPDATE statements.
+
+    v1.6.8: STATUS and NOTES columns dropped from RESET_SCHEDULE — removed
+    from the SELECT and column_config below (would otherwise break with
+    an invalid-identifier SQL error after the schema migration).
     """
     if not st.session_state.get("is_admin"):
         return
@@ -234,9 +360,7 @@ def render_reset_schedule_editor_section():
                 CITY,
                 ADDRESS,
                 RESET_DATE,
-                RESET_TIME,
-                STATUS,
-                NOTES
+                RESET_TIME
             FROM RESET_SCHEDULE
             WHERE UPPER(TRIM(CHAIN_NAME)) = %s
             ORDER BY STORE_NUMBER, RESET_DATE
@@ -264,8 +388,6 @@ def render_reset_schedule_editor_section():
         "STORE_NAME":         st.column_config.TextColumn("Store Name", disabled=True),
         "CITY":               st.column_config.TextColumn("City", disabled=True),
         "ADDRESS":            st.column_config.TextColumn("Address", disabled=True),
-        "STATUS":             st.column_config.TextColumn("Status", disabled=True),
-        "NOTES":              st.column_config.TextColumn("Notes", disabled=True),
         "RESET_DATE": st.column_config.DateColumn(
             "Reset Date",
             format="MM/DD/YYYY",
