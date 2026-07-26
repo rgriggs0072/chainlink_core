@@ -21,25 +21,19 @@ def generate_reset_schedule_template() -> Workbook:
     - Leaves all data rows empty for the user to fill
 
     This is the official template for users to paste/enter reset schedule rows.
+
+    Everything except STORE_NUMBER / RESET_DATE / RESET_TIME is now
+    injected server-side: CHAIN_NAME/STORE_NAME/ADDRESS/CITY/COUNTY from
+    CUSTOMERS, STATE as a blank placeholder (not available on CUSTOMERS).
     """
     wb = Workbook()
     ws = wb.active
     ws.title = "RESET_SCHEDULE_TEMPLATE"
 
     headers = [
-        "CHAIN_NAME",    # A
-        "STORE_NUMBER",  # B
-        "STORE_NAME",    # C
-        "PHONE_NUMBER",  # D
-        "CITY",          # E
-        "ADDRESS",       # F
-        "STATE",         # G
-        "COUNTY",        # H
-        "TEAM_LEAD",     # I
-        "RESET_DATE",    # J
-        "RESET_TIME",    # K
-        "STATUS",        # L
-        "NOTES",         # M
+        "STORE_NUMBER",  # A
+        "RESET_DATE",    # B
+        "RESET_TIME",    # C
     ]
 
     for col_idx, header in enumerate(headers, start=1):
@@ -53,13 +47,16 @@ def format_reset_schedule(workbook):
 
     Responsibilities:
     - Enforce canonical headers on the 'RESET_SCHEDULE_TEMPLATE' sheet.
-    - Validate required fields in each row:
-        CHAIN_NAME, STORE_NUMBER, STORE_NAME, ADDRESS, CITY, RESET_DATE, RESET_TIME
+    - Validate required fields in each row: STORE_NUMBER, RESET_DATE, RESET_TIME.
     - Validate STORE_NUMBER is numeric.
     - Validate RESET_DATE as a real date (mm/dd/yyyy or Excel date).
     - Validate RESET_TIME as a real time (e.g., '8:00 AM', '13:00').
-    - Normalize CHAIN_NAME and STORE_NAME to uppercase.
     - Apply consistent Excel date formatting to RESET_DATE.
+
+    CHAIN_NAME, STORE_NAME, ADDRESS, CITY, COUNTY, STATE are no longer part
+    of this sheet — they're injected/enriched separately from CUSTOMERS
+    (see enrich_reset_schedule_with_customer_data()) after this function
+    returns successfully.
 
     Returns:
         workbook (Workbook): Formatted openpyxl workbook if validation passes.
@@ -74,19 +71,9 @@ def format_reset_schedule(workbook):
 
     # ---- Canonical headers ----
     header_names = [
-        "CHAIN_NAME",    # A
-        "STORE_NUMBER",  # B
-        "STORE_NAME",    # C
-        "PHONE_NUMBER",  # D
-        "CITY",          # E
-        "ADDRESS",       # F
-        "STATE",         # G
-        "COUNTY",        # H
-        "TEAM_LEAD",     # I
-        "RESET_DATE",    # J
-        "RESET_TIME",    # K
-        "STATUS",        # L
-        "NOTES",         # M
+        "STORE_NUMBER",  # A
+        "RESET_DATE",    # B
+        "RESET_TIME",    # C
     ]
     for idx, header in enumerate(header_names, start=1):
         ws.cell(row=1, column=idx, value=header)
@@ -97,13 +84,9 @@ def format_reset_schedule(workbook):
     # 1) Required columns: collect all row-level errors (with row numbers)
     # ------------------------------------------------------------------
     required_columns = {
-        "A": "CHAIN_NAME",
-        "B": "STORE_NUMBER",
-        "C": "STORE_NAME",
-        "E": "CITY",
-        "F": "ADDRESS",
-        "J": "RESET_DATE",
-        "K": "RESET_TIME",
+        "A": "STORE_NUMBER",
+        "B": "RESET_DATE",
+        "C": "RESET_TIME",
     }
 
     for col_letter, col_name in required_columns.items():
@@ -126,18 +109,18 @@ def format_reset_schedule(workbook):
 
     for row_idx in range(2, ws.max_row + 1):
         # STORE_NUMBER must be numeric if present
-        store_num_cell = ws.cell(row=row_idx, column=2)  # B
+        store_num_cell = ws.cell(row=row_idx, column=1)  # A
         store_val = store_num_cell.value
         if store_val is not None and str(store_val).strip() != "":
             try:
                 int(str(store_val).strip())
             except ValueError:
                 errors.append(
-                    f"Row {row_idx}: STORE_NUMBER must be numeric (column B). Got '{store_val}'."
+                    f"Row {row_idx}: STORE_NUMBER must be numeric (column A). Got '{store_val}'."
                 )
 
         # RESET_DATE must be a valid date
-        reset_date_cell = ws.cell(row=row_idx, column=10)  # J
+        reset_date_cell = ws.cell(row=row_idx, column=2)  # B
         rd_val = reset_date_cell.value
         if rd_val is not None and not (isinstance(rd_val, str) and rd_val.strip() == ""):
             parsed_date = None
@@ -162,7 +145,7 @@ def format_reset_schedule(workbook):
                 reset_date_cell.style = date_style
 
         # RESET_TIME must be a valid time
-        reset_time_cell = ws.cell(row=row_idx, column=11)  # K
+        reset_time_cell = ws.cell(row=row_idx, column=3)  # C
         rt_val = reset_time_cell.value
         if rt_val is not None and not (isinstance(rt_val, str) and rt_val.strip() == ""):
             parsed_time = None
@@ -188,15 +171,6 @@ def format_reset_schedule(workbook):
             if parsed_time is not None:
                 reset_time_cell.value = parsed_time
 
-        # Normalize CHAIN_NAME + STORE_NAME to uppercase
-        chain_cell = ws.cell(row=row_idx, column=1)  # A
-        if isinstance(chain_cell.value, str):
-            chain_cell.value = chain_cell.value.strip().upper()
-
-        store_name_cell = ws.cell(row=row_idx, column=3)  # C
-        if isinstance(store_name_cell.value, str):
-            store_name_cell.value = store_name_cell.value.strip().upper()
-
     # ------------------------------------------------------------------
     # 3) If any errors, bail out with messages; otherwise succeed
     # ------------------------------------------------------------------
@@ -209,6 +183,61 @@ def format_reset_schedule(workbook):
     st.success("✅ Reset Schedule template validated and formatted successfully.")
     return workbook
 
+
+def enrich_reset_schedule_with_customer_data(
+    df: pd.DataFrame,
+    chain_name: str,
+    tenant_id: str,
+    conn,
+) -> pd.DataFrame:
+    """
+    Enrich a Reset Schedule DataFrame with ADDRESS, CITY, COUNTY looked up
+    from CUSTOMERS on CHAIN_NAME + STORE_NUMBER, and inject STATE as a
+    blank placeholder (STATE exists on RESET_SCHEDULE but not on CUSTOMERS,
+    so it can't be looked up — it's simply not client-provided anymore).
+
+    Pure function — no Streamlit calls.
+
+    Kept separate from the shared validate_and_enrich_chain_file() (used
+    by both Distro Grid and Reset Schedule) rather than extending it,
+    since Distro Grid doesn't want ADDRESS/CITY/COUNTY added to its own
+    upload flow — this keeps the blast radius contained to Reset Schedule.
+
+    Expects df to already have CHAIN_NAME populated and STORE_NUMBER
+    present (does its own str/strip normalization defensively).
+    """
+    chain_upper = chain_name.strip().upper()
+
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT STORE_NUMBER, ADDRESS, CITY, COUNTY
+            FROM CUSTOMERS
+            WHERE TENANT_ID = %s
+              AND CHAIN_NAME = %s
+              AND ACCOUNT_STATUS = 'ACTIVE'
+            """,
+            (tenant_id, chain_upper),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+
+    lookup = {
+        str(row[0]).strip(): {"ADDRESS": row[1], "CITY": row[2], "COUNTY": row[3]}
+        for row in rows
+    }
+
+    df = df.copy()
+    store_numbers = df["STORE_NUMBER"].astype(str).str.strip()
+
+    df["ADDRESS"] = store_numbers.map(lambda sn: lookup.get(sn, {}).get("ADDRESS"))
+    df["CITY"] = store_numbers.map(lambda sn: lookup.get(sn, {}).get("CITY"))
+    df["COUNTY"] = store_numbers.map(lambda sn: lookup.get(sn, {}).get("COUNTY"))
+    df["STATE"] = ""
+
+    return df
 
 
 def upload_reset_data(df: pd.DataFrame, selected_chain: str):
@@ -295,8 +324,8 @@ def upload_reset_data(df: pd.DataFrame, selected_chain: str):
         df.replace({np.nan: None, '': None}, inplace=True)
 
         expected_columns = [
-            'CHAIN_NAME', 'STORE_NUMBER', 'STORE_NAME', 'PHONE_NUMBER', 'CITY', 'ADDRESS',
-            'STATE', 'COUNTY', 'TEAM_LEAD', 'RESET_DATE', 'RESET_TIME', 'STATUS', 'NOTES',
+            'CHAIN_NAME', 'STORE_NUMBER', 'STORE_NAME', 'CITY', 'ADDRESS',
+            'STATE', 'COUNTY', 'RESET_DATE', 'RESET_TIME',
             'TENANT_ID', 'CREATED_AT', 'UPDATED_AT', 'LAST_LOAD_DATE'
         ]
 
@@ -304,7 +333,7 @@ def upload_reset_data(df: pd.DataFrame, selected_chain: str):
 
         placeholders = ', '.join(['%s'] * len(expected_columns))
 
-        delete_query = f"DELETE FROM RESET_SCHEDULE WHERE CHAIN_NAME = '{selected_chain}'"
+        delete_query = "DELETE FROM RESET_SCHEDULE WHERE TRIM(UPPER(CHAIN_NAME)) = %s"
         insert_query = f"INSERT INTO RESET_SCHEDULE ({', '.join(expected_columns)}) VALUES ({placeholders})"
 
         def _safe_val(v):
@@ -321,7 +350,7 @@ def upload_reset_data(df: pd.DataFrame, selected_chain: str):
         with conn.cursor() as cur:
             cur.execute("BEGIN;")
             st.info(f"Removing existing RESET_SCHEDULE records for: {selected_chain}")
-            cur.execute(delete_query)
+            cur.execute(delete_query, (selected_chain.strip(),))
 
             st.info("Inserting new records into RESET_SCHEDULE...")
             rows = [

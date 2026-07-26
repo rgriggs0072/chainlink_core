@@ -43,10 +43,13 @@ from utils.distro_grid.formatters import (
 from utils.distro_grid_helpers import (
     upload_distro_grid_to_snowflake,
     update_spinner,  # spinner callback for upload
-    validate_store_numbers_for_chain,
 )
 from utils.snowflake_utils import fetch_distinct_values
-from utils.load_company_data_helpers import load_chain_stores, validate_and_enrich_chain_file
+from utils.load_company_data_helpers import (
+    load_chain_stores,
+    validate_and_enrich_chain_file,
+)
+from utils.ui_helpers import apply_store_number_guardrail
 
 
 # ---------------------------------------------------------------------
@@ -117,82 +120,6 @@ def _validate_chain_in_df(df: pd.DataFrame, selected_chain: str, context: str) -
     )
     st.dataframe(mismatched.head(200))
 
-    return False
-
-
-# ---------------------------------------------------------------------
-# Internal helper: STORE_NUMBER / chain guardrail
-# ---------------------------------------------------------------------
-
-
-def _apply_store_number_guardrail(
-    df: pd.DataFrame,
-    chain_name: str,
-    tenant_id: str,
-    conn,
-) -> bool:
-    """
-    Runs validate_store_numbers_for_chain() and renders the result.
-
-    - Zero store numbers found: st.error() + st.stop().
-    - Match rate below threshold: st.error() (with suggested chain, if
-      any) + st.stop().
-    - Match rate at/above threshold: subtle st.success() and returns True.
-
-    st.stop() halts the entire script run, so callers can treat a True
-    return as "safe to proceed" without needing to separately branch on
-    a False return.
-    """
-    result = validate_store_numbers_for_chain(
-        df=df,
-        chain_name=chain_name,
-        tenant_id=tenant_id,
-        conn=conn,
-    )
-
-    chain_upper = chain_name.strip().upper()
-
-    if result["total_count"] == 0:
-        st.error("❌ No STORE_NUMBER values found in the uploaded file.")
-        st.stop()
-
-    if result["passed"]:
-        st.success(
-            f"✅ {result['matched_count']} of {result['total_count']} store numbers "
-            f"verified for {chain_upper}."
-        )
-        return True
-
-    match_pct = result["match_rate"] * 100
-    message_lines = [
-        "❌ Store number mismatch — upload stopped.",
-        "",
-        f"Only {result['matched_count']} of {result['total_count']} store numbers in your "
-        f"file match {chain_upper} stores in the system ({match_pct:.0f}% match rate). "
-        "The minimum required is 90%.",
-        "",
-    ]
-
-    if result["suggested_chain"]:
-        suggested_pct = result["suggested_match_rate"] * 100
-        suggested_matched = round(result["suggested_match_rate"] * result["total_count"])
-        message_lines.append(
-            f"💡 Best match found: {result['suggested_chain']} "
-            f"({suggested_matched} of {result['total_count']} store numbers match, "
-            f"{suggested_pct:.0f}%). Did you mean to select {result['suggested_chain']} instead?"
-        )
-        message_lines.append("")
-        message_lines.append(
-            "Please select the correct chain and re-upload, or check that you have the right file."
-        )
-    else:
-        message_lines.append(
-            "No close match was found in any other chain. Please check that you have "
-            f"uploaded the correct file for {chain_upper}."
-        )
-
-    st.error("\n".join(message_lines))
-    st.stop()
     return False
 
 
@@ -313,7 +240,7 @@ def render_distro_grid_formatter_section():
             # 1b) Guardrail: cross-validate STORE_NUMBER values against CUSTOMERS
             # for the selected chain, before any formatting runs.
             tenant_id = st.session_state.get("tenant_id")
-            _apply_store_number_guardrail(
+            apply_store_number_guardrail(
                 df=raw_df,
                 chain_name=selected_chain,
                 tenant_id=tenant_id,
@@ -473,7 +400,7 @@ def render_distro_grid_uploader_section():
         # --- Guardrail: cross-validate STORE_NUMBER values against CUSTOMERS
         # for the selected chain, before any DB write happens ---
         tenant_id = st.session_state.get("tenant_id")
-        _apply_store_number_guardrail(
+        apply_store_number_guardrail(
             df=df,
             chain_name=selected_chain,
             tenant_id=tenant_id,
