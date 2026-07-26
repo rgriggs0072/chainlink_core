@@ -463,14 +463,14 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
             # Shared column lists used by both archive INSERT statements
             archive_columns = """
                 TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
-                PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
-                SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
+                PRODUCT_ID, UPC, PRODUCT_NAME, MANUFACTURER,
+                YES_NO, COUNTY,
                 ARCHIVE_DATE, CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
             """
             archive_select = """
                 TENANT_ID, CUSTOMER_ID, CHAIN_NAME, STORE_NAME, STORE_NUMBER,
-                PRODUCT_ID, UPC, SKU, PRODUCT_NAME, MANUFACTURER,
-                SEGMENT, YES_NO, ACTIVATION_STATUS, COUNTY,
+                PRODUCT_ID, UPC, PRODUCT_NAME, MANUFACTURER,
+                YES_NO, COUNTY,
                 CURRENT_DATE(), CREATED_AT, UPDATED_AT, LAST_LOAD_DATE
             """
 
@@ -498,8 +498,8 @@ def load_data_into_distro_grid(conn, df, selected_chain, season: str):
                 INSERT INTO {dg_archive_matched_table} ({archive_columns})
                 SELECT
                     dg.TENANT_ID, dg.CUSTOMER_ID, dg.CHAIN_NAME, dg.STORE_NAME, dg.STORE_NUMBER,
-                    dg.PRODUCT_ID, dg.UPC, dg.SKU, dg.PRODUCT_NAME, dg.MANUFACTURER,
-                    dg.SEGMENT, dg.YES_NO, dg.ACTIVATION_STATUS, dg.COUNTY,
+                    dg.PRODUCT_ID, dg.UPC, dg.PRODUCT_NAME, dg.MANUFACTURER,
+                    dg.YES_NO, dg.COUNTY,
                     CURRENT_DATE(), dg.CREATED_AT, dg.UPDATED_AT, dg.LAST_LOAD_DATE
                 FROM {dg_table} dg
                 INNER JOIN "{db}"."{schema}".SUPPLIER_COUNTY sc
