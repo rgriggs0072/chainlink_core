@@ -29,6 +29,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.6] — 2026-07-25
+
+### New Features
+- None
+
+### Bug Fixes
+- Fix Placement Intelligence querying dropped SEGMENT column —
+  `get_current_and_archived_distro()` in `ai_placement_helpers.py` no
+  longer selects `dg.SEGMENT` / `dga.SEGMENT` from `DISTRO_GRID` /
+  `DISTRO_GRID_MATCHED_ARCHIVE`, ahead of those columns being dropped
+  from the schema
+
+### UI Changes
+- None
+
+### Snowflake / DB Changes
+- Phase B distro grid simplification: dropped `SKU`, `ACTIVATION_STATUS`,
+  and `SEGMENT` columns from `DISTRO_GRID`, `DISTRO_GRID_ARCHIVE_FULL`,
+  and `DISTRO_GRID_MATCHED_ARCHIVE` on both Summit Beverage
+  (tenant 9002) and Delta Pacific (tenant 9001). Archive INSERT
+  statements in `distro_grid_helpers.py` updated to match ahead of the
+  migration on each tenant; verified zero rows referencing the dropped
+  columns on both after migration. Completes the simplification
+  started in v1.6.5 (Phase A — Python code paths only, no schema
+  changes)
+
+### Breaking Changes
+- `SKU`, `ACTIVATION_STATUS`, and `SEGMENT` no longer exist on
+  `DISTRO_GRID`, `DISTRO_GRID_ARCHIVE_FULL`, or
+  `DISTRO_GRID_MATCHED_ARCHIVE` for Summit Beverage or Delta Pacific.
+  Any external tooling or ad hoc queries referencing these columns
+  will break
+
+---
+
 ## [v1.6.5] — 2026-07-24
 
 ### New Features
