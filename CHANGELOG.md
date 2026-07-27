@@ -29,6 +29,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.9] — 2026-07-27
+
+### New Features
+- Documents & Resources library — new top-level nav section where any
+  logged-in user can browse and download how-to guides as PDFs.
+  Grouped by category, card-style layout, download buttons per
+  document. Three launch documents seeded: How to Upload a
+  Distribution Grid, How to Upload a Reset Schedule, How Chainlink
+  Analytics Works.
+
+### Bug Fixes
+- None
+
+### UI Changes
+- New "Documents" item in the sidebar nav, placed after Format &
+  Upload and before the admin-gated sections (AI & Forecasts, Admin).
+
+### Snowflake / DB Changes
+- New `TENANTUSERDB.CHAINLINK_SCH.DOCUMENTS` table — platform-level
+  document metadata shared across all tenants (not per-tenant-database
+  like every other table in the system). Nullable `TENANT_ID`: `NULL`
+  means visible to all tenants, a specific tenant_id restricts to that
+  tenant only. `SUMMITBEVERAGE_SRV_ROLE` and `DELTAPACIFICBEV_SRV_ROLE`
+  granted USAGE on the database/schema and SELECT on the table.
+
+### Breaking Changes
+- None
+
+---
+
 ## [v1.6.8] — 2026-07-25
 
 ### New Features
