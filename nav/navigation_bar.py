@@ -44,6 +44,10 @@ NAV_SECTIONS = {
             ("Distribution Grid Processing",   "grid-1x2"),
         ],
     },
+    "Documents": {
+        "icon": "journal-text",
+        "sub_pages": [],
+    },
     "AI & Forecasts": {
         "icon": "stars",
         "sub_pages": [
@@ -188,7 +192,7 @@ def render_sidebar_navigation(
     """
     st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
 
-    sections = ["Home", "Chat", "Reports", "Format & Upload"]
+    sections = ["Home", "Chat", "Reports", "Format & Upload", "Documents"]
     if show_ai:
         sections.append("AI & Forecasts")
     if show_admin:
