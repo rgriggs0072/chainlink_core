@@ -1115,15 +1115,6 @@ REQUIRED_PRODUCT_COLUMNS = [
 ]
 
 
-def create_products_template_workbook():
-    """Legacy helper to generate Products template as Excel workbook (optional)."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Products"
-    ws.append(REQUIRED_PRODUCT_COLUMNS)
-    return wb
-
-
 def generate_products_template() -> pd.DataFrame:
     """Empty Products template dataframe (canonical headers)."""
     return pd.DataFrame(columns=REQUIRED_PRODUCT_COLUMNS)
@@ -1180,9 +1171,14 @@ def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 
     Rules:
     - PRODUCT_ID required, digits-only, unique
-    - CARRIER_UPC cleaned; blank allowed (warning -> NULL)
+    - CARRIER_UPC required (hard stop if blank/null/"0") — a product
+      without a UPC can never match a distro grid upload, creating
+      invisible gaps in gap reports (v1.6.10)
     - CARRIER_UPC length <= 20
     - block placeholder '999999999999'
+    - duplicate CARRIER_UPC within the file is a warning, not an error
+      — seasonal UPC rotation (same barcode across spring/fall variants)
+      is a legitimate, common pattern in this industry (v1.6.10)
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -1238,13 +1234,41 @@ def validate_products_upload(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[s
         rows = [i + 2 for i in df.index[len_mask]]
         errors.append("CARRIER_UPC must be <= 20 digits for row(s): " + ", ".join(map(str, rows)))
 
-    missing_upc_mask = df["CARRIER_UPC"].isna() | df["CARRIER_UPC"].eq("")
+    # Hard stop: CARRIER_UPC is required. "0"/"0.0" from Excel cleans down
+    # to the digit string "0" via _clean_upc() (not None/""), so it must be
+    # checked explicitly — otherwise a meaningless placeholder zero would
+    # slip through as "numeric" and pass silently.
+    missing_upc_mask = (
+        df["CARRIER_UPC"].isna()
+        | df["CARRIER_UPC"].eq("")
+        | df["CARRIER_UPC"].eq("0")
+    )
     if missing_upc_mask.any():
         rows = [i + 2 for i in df.index[missing_upc_mask]]
-        warnings.append(
-            "CARRIER_UPC blank/non-numeric for row(s): "
+        errors.append(
+            f"{int(missing_upc_mask.sum())} product(s) are missing a UPC (rows: "
             + ", ".join(map(str, rows))
-            + " -> will load as NULL."
+            + "). All products require a valid CARRIER_UPC before uploading. "
+            "Please obtain the UPC from your supplier and re-upload."
+        )
+
+    # Duplicate CARRIER_UPC within this file — warning only, not a hard
+    # stop. Seasonal UPC rotation (same barcode across a spring/fall
+    # variant) is a legitimate, common pattern in this industry, so we
+    # inform rather than block. Excludes missing UPCs — those are already
+    # a hard stop above and aren't meaningful "duplicates" of each other.
+    dup_upc_mask = (
+        ~missing_upc_mask
+        & df["CARRIER_UPC"].notna()
+        & df["CARRIER_UPC"].duplicated(keep=False)
+    )
+    if dup_upc_mask.any():
+        warnings.append(
+            f"{int(dup_upc_mask.sum())} product(s) share a duplicate CARRIER_UPC "
+            "with another product in this file. This may be intentional "
+            "(seasonal UPC rotation is common in the beverage industry) but "
+            "please verify before uploading. Download the duplicate list "
+            "below to review."
         )
         df.loc[missing_upc_mask, "CARRIER_UPC"] = None
 

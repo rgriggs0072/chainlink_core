@@ -29,6 +29,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.10] — 2026-07-27
+
+### New Features
+- CARRIER_UPC required guardrail on product upload: blank/null UPC
+  is now a hard stop at format time with row-level error detail.
+  Duplicate CARRIER_UPC values trigger a non-blocking warning with
+  a downloadable duplicate list for supplier verification.
+
+### Bug Fixes
+- None
+
+### UI Changes
+- Products upload page: CARRIER_UPC now marked required in the
+  column-mapping help text; duplicate-UPC warning includes a
+  "Download Duplicate UPC List" button (Excel, grouped by UPC).
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- Product uploads with any blank/null/"0" CARRIER_UPC are now
+  rejected outright — previously loaded with UPC as NULL. Existing
+  products already in PRODUCTS with a NULL UPC are unaffected (no
+  schema change); this only blocks new uploads going forward.
+
+---
+
 ## [v1.6.9] — 2026-07-27
 
 ### New Features

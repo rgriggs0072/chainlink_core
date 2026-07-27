@@ -383,8 +383,13 @@ def render_products_section():
     Notes:
     - CARRIER_UPC:
         - Dashes/spaces are removed during cleaning.
-        - Blank UPCs are allowed (warning) and will load as NULL.
+        - Blank/null/"0" UPCs are a hard stop (v1.6.10) — a product
+          without a UPC can never match a distro grid upload, creating
+          invisible gap-report gaps. No override.
         - Placeholder UPC '999999999999' is blocked (error).
+        - Duplicate UPCs within the file are a non-blocking warning
+          (seasonal UPC rotation is a legitimate industry pattern) —
+          downloadable list offered for review before upload.
     """
 
     st.subheader("Products Table Validator (Recommended)")
@@ -412,7 +417,7 @@ def render_products_section():
         • <b>Supplier</b> → <b>SUPPLIER</b><br>
         • <b>Product Name</b> → <b>PRODUCT_NAME</b><br>
         • <b>Package</b> → <b>PACKAGE</b><br>
-        • <b>Carrier UPC</b> → <b>CARRIER_UPC</b> (we auto-remove dashes/spaces; must be digits ≤ 20)<br>
+        • <b>Carrier UPC</b> → <b>CARRIER_UPC</b> (required — we auto-remove dashes/spaces; must be digits ≤ 20)<br>
         • <b>Product Manager</b> → <b>PRODUCT_MANAGER</b> (optional)
         </small>
         """,
@@ -460,6 +465,7 @@ def render_products_section():
                 bad_upc_mask = (
                     cleaned_df["CARRIER_UPC"].isna()
                     | (cleaned_df["CARRIER_UPC"] == "")
+                    | (cleaned_df["CARRIER_UPC"] == "0")
                     | (cleaned_df["CARRIER_UPC"] == "999999999999")
                 )
                 bad_rows = cleaned_df.loc[bad_upc_mask].copy()
@@ -476,6 +482,31 @@ def render_products_section():
             st.warning("Validation warnings (non-fatal):")
             for w in warnings:
                 st.write(f"- {w}")
+
+            # Duplicate CARRIER_UPC — downloadable list for supplier
+            # verification. Recomputed from cleaned_df rather than passed
+            # through validate_products_upload()'s return, matching how
+            # the errors branch above recomputes bad_upc_mask.
+            if "CARRIER_UPC" in cleaned_df.columns:
+                dup_upc_mask = (
+                    cleaned_df["CARRIER_UPC"].notna()
+                    & (cleaned_df["CARRIER_UPC"] != "")
+                    & cleaned_df["CARRIER_UPC"].duplicated(keep=False)
+                )
+                dup_rows = cleaned_df.loc[dup_upc_mask].sort_values("CARRIER_UPC")
+                if not dup_rows.empty:
+                    dup_buffer = BytesIO()
+                    with pd.ExcelWriter(dup_buffer, engine="openpyxl") as writer:
+                        dup_rows.to_excel(writer, index=False, sheet_name="Duplicate UPCs")
+                    dup_buffer.seek(0)
+                    st.download_button(
+                        label="Download Duplicate UPC List",
+                        data=dup_buffer,
+                        file_name="duplicate_carrier_upc.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="products_dup_upc_download",
+                        width='stretch',
+                    )
 
         # 5) Preview of what will load
         st.success("Validation passed. Preview of cleaned Products data:")
