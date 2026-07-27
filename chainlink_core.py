@@ -452,6 +452,9 @@ def main():
             with t3:
                 _safe_import("app_pages.distro_grid").render()
 
+        elif selected_section == "Documents":
+            _safe_import("app_pages.documents").render()
+
         elif selected_section == "AI & Forecasts":
             if not is_admin:
                 st.warning("You don't have access to AI & Forecasts.")
