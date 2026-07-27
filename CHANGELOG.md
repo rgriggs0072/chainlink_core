@@ -38,7 +38,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   a downloadable duplicate list for supplier verification.
 
 ### Bug Fixes
-- None
+- Fix Products upload preview table rendering as index-only (no
+  column data) on the duplicate-CARRIER_UPC warning path, the
+  happy path, and the hard-stop path — `st.dataframe(..., width=True)`
+  was silently accepted as a 1px width instead of full width.
+  Switched to `width='stretch'`.
 
 ### UI Changes
 - Products upload page: CARRIER_UPC now marked required in the
