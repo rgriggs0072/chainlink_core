@@ -29,6 +29,69 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [v1.6.11] — 2026-07-27
+
+### New Features
+- UPC Diagnostic Tool Mode 2 — single UPC/barcode lookup against Open Food
+  Facts, nested as a second tab alongside the existing bulk catalog
+  validator (now "Mode 1"). Runs the barcode through the same
+  normalize → check-digit pipeline Mode 1 uses (warns and proceeds on a
+  bad check digit rather than blocking, matching the v1.6.10 duplicate-UPC
+  pattern), then shows a product card — name, brand, category, quantity,
+  image, and Nutri-Score/Eco-Score/NOVA group when OFF actually scores
+  the product. Ephemeral / session-scoped only — no DB write, no audit
+  trail, nothing to download.
+
+### Bug Fixes
+- Open Food Facts calls were silently 403ing on every single request —
+  `requests`' default User-Agent is blocked by OFF's edge/bot protection.
+  Confirmed by direct testing: identical request, only the header
+  changed, 403 → 200. This means the "Check against Barcode Database"
+  option has likely never successfully returned real data in production;
+  every row was silently falling into the generic error path. Fixed by
+  sending a descriptive `User-Agent` on every OFF call.
+- Rate-limited OFF responses (HTTP 429) were indistinguishable from
+  genuinely-not-found barcodes — both landed in the same bucket, making
+  the "❌ Not Found in Barcode DB" count untrustworthy whenever OFF was
+  throttling us. Split the OFF call into `_call_off_api()` +
+  `_classify_off_result()` (found / not_found / rate_limited / error),
+  shared by both Mode 1 and the new Mode 2. Mode 1's summary now shows a
+  separate "🚧 Rate-Limited" count instead of folding those rows into
+  "Not Found"; Mode 2 shows a distinct rate-limit message ("wait a
+  moment and try again") instead of the not-found message.
+- Fixed a PyArrow serialization failure introduced by the above:
+  `BARCODE_DB_FOUND` mixing Python `bool`/`None`/new classification
+  strings in one object column made `st.dataframe()` throw
+  `ArrowInvalid` on the results table (Streamlit's automatic-fix
+  fallback masked it, but it was firing on every catalog run with any
+  non-found row). Column now holds one consistent type — string states
+  `"FOUND"` / `"NOT_FOUND"` / `"RATE_LIMITED"` / `"ERROR"`, or `None`
+  when the OFF check didn't run — Arrow-safe by construction.
+- Open Food Facts returns the literal grade value `"not-applicable"` (or
+  `"unknown"`) for Nutri-Score/Eco-Score on products it doesn't score
+  (common for beverages/alcohol) rather than omitting the field —
+  Mode 2 was showing a broken, truncated "NOT-AP…" score tile for these.
+  Now treated the same as absent, per the hide-don't-show-N/A rule.
+
+### UI Changes
+- UPC Diagnostic Tool now has two tabs: "📋 Mode 1 — Catalog Validation"
+  (unchanged bulk flow) and "🔎 Mode 2 — Single UPC Lookup" (new).
+- Mode 1's summary row gains a "🚧 Rate-Limited" metric when the barcode
+  database check is enabled.
+
+### Snowflake / DB Changes
+- None
+
+### Breaking Changes
+- `BARCODE_DB_FOUND` in Mode 1's results table/export changed from
+  `True`/`False`/`None` to the strings `"FOUND"`/`"NOT_FOUND"`/
+  `"RATE_LIMITED"`/`"ERROR"`, or `None` when the check didn't run. No
+  other code in the repo reads this column (verified), so this only
+  affects anyone parsing the downloaded Excel/CSV export by the old
+  boolean values.
+
+---
+
 ## [v1.6.10] — 2026-07-27
 
 ### New Features
