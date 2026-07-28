@@ -6,7 +6,7 @@
 
 ---
 
-## Tech Stack
+## Tech StackTask Completion Report
 - **Language**: Python 3.x
 - **UI**: Streamlit **1.56.0** (pinned in `requirements.txt` on both `dev` and `main` — verify before targeting an API). `requirements-dev.txt` separately pins `streamlit==1.43.0` but is an undeployed "packages being tested for upgrade" file, not what either branch actually runs.
 - **Backend**: Snowflake
@@ -133,6 +133,34 @@ For any SQL touching CUSTOMERS, DISTRO_GRID, PRODUCTS, SUPPLIER_COUNTY, RESET_SC
 - **Don't call `PARSE_JSON()` inside a SQL `VALUES` clause** — Snowflake doesn't support it. Use `INSERT INTO ... SELECT ... FROM (SELECT 1)` pattern instead (v1.2.0 LOG table fix).
 - **Don't archive DISTRO_GRID rows BEFORE running `UPDATE_DISTRO_GRID`** — PRODUCT_ID and COUNTY won't be stamped yet, and the matched archive will write 0 rows. Archive AFTER the procedure (v1.2.0 fix).
 - **Don't reference `DISTRO_GRID_ARCHIVE`** — it was renamed to `DISTRO_GRID_ARCHIVE_FULL` in v1.2.0. Placement Intelligence reads from `DISTRO_GRID_MATCHED_ARCHIVE`.
+
+---
+
+
+## Task Completion Reports
+
+**Rule**: Every task ends with a summary block below — no exceptions, even for small or self-explanatory changes. Applies to code changes, merges, deployments, and investigations alike.
+
+```
+## Task Complete: <short title>
+
+**What shipped:** 1-2 lines, plain language.
+
+**Files changed:**
+- path/to/file.py
+
+**Commits:**
+- dev: <hash> — <message>
+- main: <hash> — <message>  (omit if not merged)
+
+**Branch state:** left on `<branch>`, <clean|dirty>
+
+**Tests run:** <what was tested> — <pass/fail/N/A>
+
+**Blockers / follow-ups:** <none, or what's outstanding>
+```
+
+If a task stops mid-way or hits a blocker, the same report fires anyway — report current state and what's blocking. Never go quiet without it.
 
 ---
 
