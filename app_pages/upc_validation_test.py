@@ -221,7 +221,11 @@ def render() -> None:
                 st.session_state.validation_results = None
             else:
                 if check_off:
-                    st.info(f"Found **{len(df):,}** products. Querying barcode database — this may take a minute.")
+                    est_minutes = len(df) * 4.5 / 60
+                    st.info(
+                        f"Found **{len(df):,}** products. Querying barcode database — "
+                        f"this will take approximately {est_minutes:.0f} minutes."
+                    )
                 else:
                     st.info(f"Found **{len(df):,}** products. Running check digit validation…")
 
@@ -237,7 +241,11 @@ def render() -> None:
 
                     if check_off and upc_12:
                         off = _fetch_off(upc_12)
-                        time.sleep(0.3)
+                        # OFF's documented limit is 15 req/min per IP (4.0s min
+                        # spacing) for read product queries — 4.5s gives margin.
+                        # Found via Delta Pacific testing: 0.3s (~200 req/min)
+                        # was 13x over the limit and only surfaced at real scale.
+                        time.sleep(4.5)
                     else:
                         off = {"off_found": None, "off_product_name": "", "off_brand": "", "off_barcode": ""}
 
